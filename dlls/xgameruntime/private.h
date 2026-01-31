@@ -55,6 +55,7 @@
 #include <xuser.h>
 #include <xasync.h>
 #include <xasyncprovider.h>
+#include <xlauncher.h>
 
 #include "wine/unixlib.h"
 #include "wine/debug.h"
@@ -114,6 +115,7 @@ extern IXNetworkingImpl *x_networking;
 extern IXGameImpl *x_game;
 extern IXUserImpl6 *x_user;
 extern IXUserDeviceImpl *x_user_device;
+extern IXLauncherImpl *x_launcher;
 
 #ifdef __cplusplus
 extern ABI::Xodus::IIPCLayer *xodus_ipclayer;

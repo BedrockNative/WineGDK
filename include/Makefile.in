@@ -1243,6 +1243,7 @@ SOURCES = \
 	xcmc.h \
 	xgame.idl \
 	xinput.h \
+	xlauncher.idl \
 	xmldom.h \
 	xmldom.idl \
 	xmldomdid.h \
