@@ -225,6 +225,8 @@ struct request
     WCHAR *raw_headers;
     void *optional;
     DWORD optional_len;
+    DWORD send_total_len;   /* Content-Length from WinHttpSendRequest */
+    DWORD bytes_written;    /* body bytes actually written so far */
     struct netconn *netconn;
     DWORD security_flags;
     BOOL check_revocation;
