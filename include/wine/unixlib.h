@@ -278,6 +278,10 @@ NTSYSAPI int ntdll_wcsnicmp( const WCHAR *str1, const WCHAR *str2, int n );
 
 #else /* WINE_UNIX_LIB */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 extern unixlib_handle_t __wine_unixlib_handle;
 extern NTSTATUS (WINAPI *__wine_unix_call_dispatcher)( unixlib_handle_t, unsigned int, void * );
 extern NTSTATUS WINAPI __wine_init_unix_call(void);
@@ -299,6 +303,10 @@ static inline NTSTATUS __wine_unix_call( unixlib_handle_t handle, unsigned int c
 #endif
 
 #define WINE_UNIX_CALL(code,args) __wine_unix_call( __wine_unixlib_handle, (code), (args) )
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* WINE_UNIX_LIB */
 

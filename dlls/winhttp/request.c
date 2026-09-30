@@ -20,6 +20,7 @@
  */
 
 #include <assert.h>
+#include <stdio.h>
 #include <stdarg.h>
 #include <wchar.h>
 #include <zlib.h>
@@ -3487,6 +3488,20 @@ static DWORD read_data( struct request *request, char *buffer, DWORD size, DWORD
     }
 
     TRACE( "%lu bytes read\n", bytes_read );
+    if (bytes_read && bytes_read <= 256 && buffer)
+    {
+        FILE *df = fopen( "/home/perfect/OrionBE/logs/http-body-dump.txt", "a" );
+        if (df)
+        {
+            fprintf( df, "bytes=%lu host=", bytes_read );
+            if (request->connect && request->connect->hostname)
+                fprintf( df, "%s", debugstr_w( request->connect->hostname ) );
+            fputc( '\n', df );
+            fwrite( buffer, 1, bytes_read, df );
+            fputc( '\n', df );
+            fclose( df );
+        }
+    }
     if (end_of_data_stream( request )) finished_reading( request );
     if (async)
     {
