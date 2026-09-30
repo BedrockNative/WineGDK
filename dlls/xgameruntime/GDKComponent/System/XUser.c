@@ -571,17 +571,20 @@ cleanup:
 
 static UINT32 user_resolve_presence_title_id( void )
 {
-    /* Xbox TitleToken must match the MSA AppId used for login.
-     * Orion uses Android MSA for device-code consent; Windows title.auth → 403.
-     * The game binary remains Windows GDK — only XBL device/title claims follow MSA. */
+    /*
+     * TitleToken must match the MSA app that minted it.
+     * Windows MSA (40159362) still fails PoP for 896928775 in WineGDK; Android MSA
+     * mints 1739947436 and that unblocks join + presence claims.
+     * Keep Win32/Windows TitleId only when MSA is the Windows Bedrock client.
+     */
     if (msaAppId && !strcmp( msaAppId, "0000000048183522" ))
-        return 1739947436u; /* Android Bedrock */
+        return 1739947436u; /* Android Bedrock — required for TitleToken with Android MSA */
     return titleId ? titleId : 896928775u;
 }
 
 static const char *user_resolve_device_type( void )
 {
-    /* Must match MSA AppId family or peoplehub/SISU/presence break. */
+    /* Pair DeviceType with TitleId so XSTS claims stay coherent for sessiondirectory/presence. */
     if (msaAppId && !strcmp( msaAppId, "0000000048183522" ))
         return "Android";
     return "Win32";
@@ -684,12 +687,21 @@ static HRESULT user_ensure_device_and_title_tokens( struct XUser *impl )
 
     if (!impl->deviceToken)
     {
+        const char *version = !strcmp( deviceType, "Android" ) ? "13.0.0" : "10.0.22621";
+        int use_serial = !strcmp( deviceType, "Android" ) || !strcmp( deviceType, "iOS" )
+                         || !strcmp( deviceType, "Nintendo" );
         if (!(body = calloc( 1, 640 + PROOF_KEY_SIZE ))) return E_OUTOFMEMORY;
-        sprintf( body,
-                 "{\"Properties\":{\"AuthMethod\":\"ProofOfPossession\",\"Id\":\"%s\","
-                 "\"DeviceType\":\"%s\",\"SerialNumber\":\"%s\",\"Version\":\"%s\",\"ProofKey\":",
-                 impl->deviceId, deviceType, impl->deviceId,
-                 !strcmp( deviceType, "Android" ) ? "13.0.0" : "10.0.22621" );
+        /* SerialNumber is for mobile/console; Win32 rejects extra fields in some gateways. */
+        if (use_serial)
+            sprintf( body,
+                     "{\"Properties\":{\"AuthMethod\":\"ProofOfPossession\",\"Id\":\"%s\","
+                     "\"DeviceType\":\"%s\",\"SerialNumber\":\"%s\",\"Version\":\"%s\",\"ProofKey\":",
+                     impl->deviceId, deviceType, impl->deviceId, version );
+        else
+            sprintf( body,
+                     "{\"Properties\":{\"AuthMethod\":\"ProofOfPossession\",\"Id\":\"%s\","
+                     "\"DeviceType\":\"%s\",\"Version\":\"%s\",\"ProofKey\":",
+                     impl->deviceId, deviceType, version );
         strncat( body, impl->proofKey, PROOF_KEY_SIZE );
         strcat( body, "},\"RelyingParty\":\"http://auth.xboxlive.com\",\"TokenType\":\"JWT\"}" );
 
@@ -722,23 +734,22 @@ static HRESULT user_ensure_device_and_title_tokens( struct XUser *impl )
 
         if (FAILED(hr = HSTRINGToMultiByte( impl->deviceToken, &deviceTok ))) goto cleanup;
 
-        /* 2) title.auth with MBI_SSL RpsTicket (d=) — needed for real titleId claims / presence */
+        /*
+         * 2) title.auth with RpsTicket — same ticket bytes as user.auth (no strip/reprefix).
+         *    Do NOT send TitleId with RpsTicket (that yields HTTP 400); title comes from MSA app.
+         */
         if (impl->accessToken)
         {
             wAccess = WindowsGetStringRawBuffer( impl->accessToken, &wAccessLen );
             if ((access = calloc( wAccessLen * 4 + 1, 1 )) &&
                 WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wAccess, wAccessLen, access, wAccessLen * 4, NULL, NULL ))
             {
-                char *raw = access;
-                if (!strncmp( raw, "d=", 2 ) || !strncmp( raw, "t=", 2 )) raw += 2;
-                if (raw != access) memmove( access, raw, strlen( raw ) + 1 );
-
-                if ((body = calloc( 1, 800 + PROOF_KEY_SIZE + strlen( deviceTok ) + strlen( access ) + strlen( titleIdStr ) )))
+                if ((body = calloc( 1, 800 + PROOF_KEY_SIZE + strlen( deviceTok ) + strlen( access ) )))
                 {
                     sprintf( body,
                              "{\"Properties\":{\"AuthMethod\":\"RPS\",\"SiteName\":\"user.auth.xboxlive.com\","
-                             "\"RpsTicket\":\"d=%s\",\"DeviceToken\":\"%s\",\"TitleId\":\"%s\",\"ProofKey\":",
-                             access, deviceTok, titleIdStr );
+                             "\"RpsTicket\":\"%s\",\"DeviceToken\":\"%s\",\"ProofKey\":",
+                             access, deviceTok );
                     strncat( body, impl->proofKey, PROOF_KEY_SIZE );
                     strcat( body, "},\"RelyingParty\":\"http://auth.xboxlive.com\",\"TokenType\":\"JWT\"}" );
 
@@ -749,13 +760,25 @@ static HRESULT user_ensure_device_and_title_tokens( struct XUser *impl )
                         SUCCEEDED(hr_rps = parse_json( (char *)buffer, bufferSize, &object )) &&
                         SUCCEEDED(hr_rps = get_json_string( object, L"Token", &impl->titleToken )))
                     {
+                        {
+                            FILE *tf = fopen( "/home/perfect/OrionBE/logs/title-token-dump.txt", "a" );
+                            if (tf)
+                            {
+                                fprintf( tf, "title.auth RpsTicket OK TitleIdHint=%s bytes=%zu\n",
+                                         titleIdStr, bufferSize );
+                                fwrite( buffer, 1, bufferSize < 4000 ? bufferSize : 4000, tf );
+                                fputc( '\n', tf );
+                                fclose( tf );
+                            }
+                        }
                         free( access ); access = NULL;
                         free( buffer ); buffer = NULL; bufferSize = 0;
                         IJsonObject_Release( object ); object = NULL;
-                        TRACE( "Obtained Xbox title token via RpsTicket d= (TitleId %s).\n", titleIdStr );
+                        TRACE( "Obtained Xbox title token via RpsTicket (MSA app title).\n" );
                         goto title_ok;
                     }
-                    WARN( "title.auth RpsTicket d= failed (%#lx); falling back to TitleId-only.\n", hr_rps );
+                    WARN( "title.auth RpsTicket failed (%#lx); trying ProofOfPossession TitleId=%s.\n",
+                          hr_rps, titleIdStr );
                     free( buffer ); buffer = NULL; bufferSize = 0;
                     if (object) { IJsonObject_Release( object ); object = NULL; }
                 }
@@ -763,7 +786,72 @@ static HRESULT user_ensure_device_and_title_tokens( struct XUser *impl )
             free( access ); access = NULL;
         }
 
-        /* 3) TitleId-only — restores join/friends when RpsTicket auth is unavailable */
+        /* 3) ProofOfPossession + TitleId (resolved title first; Android fallback for join) */
+        {
+            const char *title_attempts[2];
+            int n_attempts = 0;
+            title_attempts[n_attempts++] = titleIdStr;
+            if (strcmp( titleIdStr, "1739947436" ))
+                title_attempts[n_attempts++] = "1739947436";
+
+            hr = E_FAIL;
+            for (int ai = 0; ai < n_attempts; ai++)
+            {
+                free( body ); body = NULL;
+                free( buffer ); buffer = NULL; bufferSize = 0;
+                if (object) { IJsonObject_Release( object ); object = NULL; }
+
+                if (!(body = calloc( 1, 640 + PROOF_KEY_SIZE + strlen( deviceTok ) )))
+                {
+                    hr = E_OUTOFMEMORY;
+                    goto cleanup;
+                }
+                sprintf( body,
+                         "{\"Properties\":{\"AuthMethod\":\"ProofOfPossession\",\"DeviceToken\":\"%s\","
+                         "\"TitleId\":\"%s\",\"ProofKey\":",
+                         deviceTok, title_attempts[ai] );
+                strncat( body, impl->proofKey, PROOF_KEY_SIZE );
+                strcat( body, "},\"RelyingParty\":\"http://auth.xboxlive.com\",\"TokenType\":\"JWT\"}" );
+
+                if (FAILED(hr = user_http_request_signed( impl, L"title.auth.xboxlive.com", L"/title/authenticate",
+                                                          body, &buffer, &bufferSize )))
+                {
+                    FILE *tf = fopen( "/home/perfect/OrionBE/logs/title-token-dump.txt", "a" );
+                    if (tf)
+                    {
+                        fprintf( tf, "title.auth PoP FAIL TitleId=%s hr=%#lx bytes=%zu\n",
+                                 title_attempts[ai], (unsigned long)hr, bufferSize );
+                        if (buffer && bufferSize)
+                            fwrite( buffer, 1, bufferSize < 2000 ? bufferSize : 2000, tf );
+                        fputc( '\n', tf );
+                        fclose( tf );
+                    }
+                    WARN( "Title PoP auth TitleId=%s failed, hr %#lx.\n", title_attempts[ai], hr );
+                    continue;
+                }
+                if (FAILED(hr = parse_json( (char *)buffer, bufferSize, &object ))) continue;
+                if (FAILED(hr = get_json_string( object, L"Token", &impl->titleToken ))) continue;
+                {
+                    FILE *tf = fopen( "/home/perfect/OrionBE/logs/title-token-dump.txt", "a" );
+                    if (tf)
+                    {
+                        fprintf( tf, "title.auth PoP OK TitleId=%s bytes=%zu\n", title_attempts[ai], bufferSize );
+                        fwrite( buffer, 1, bufferSize < 4000 ? bufferSize : 4000, tf );
+                        fputc( '\n', tf );
+                        fclose( tf );
+                    }
+                }
+                TRACE( "Obtained Xbox title token for TitleId %s.\n", title_attempts[ai] );
+                goto title_ok;
+            }
+        }
+
+        WARN( "Title PoP auth failed for all TitleIds; falling back to legacy RPS TitleId-only.\n" );
+        free( body ); body = NULL;
+        free( buffer ); buffer = NULL; bufferSize = 0;
+        if (object) { IJsonObject_Release( object ); object = NULL; }
+
+        /* 4) Legacy TitleId-only RPS — known to restore friends join */
         if (!(body = calloc( 1, 640 + PROOF_KEY_SIZE + strlen( deviceTok ) )))
         {
             hr = E_OUTOFMEMORY;
@@ -783,6 +871,16 @@ static HRESULT user_ensure_device_and_title_tokens( struct XUser *impl )
         }
         if (FAILED(hr = parse_json( (char *)buffer, bufferSize, &object ))) goto cleanup;
         if (FAILED(hr = get_json_string( object, L"Token", &impl->titleToken ))) goto cleanup;
+        {
+            FILE *tf = fopen( "/home/perfect/OrionBE/logs/title-token-dump.txt", "a" );
+            if (tf)
+            {
+                fprintf( tf, "title.auth legacy RPS OK TitleId=%s bytes=%zu\n", titleIdStr, bufferSize );
+                fwrite( buffer, 1, bufferSize < 4000 ? bufferSize : 4000, tf );
+                fputc( '\n', tf );
+                fclose( tf );
+            }
+        }
         TRACE( "Obtained Xbox title token for TitleId %s.\n", titleIdStr );
 
 title_ok:
@@ -808,6 +906,62 @@ cleanup:
         impl->deviceToken = NULL;
     }
     if (impl->deviceToken && impl->titleToken) return S_OK;
+    return hr;
+}
+
+
+static HRESULT user_publish_presence_online( struct XUser *impl )
+{
+    static time_t last_publish;
+    WCHAR *headers = NULL, path[160];
+    char body[96];
+    UCHAR *buffer = NULL;
+    SIZE_T bufferSize = 0;
+    UINT32 userHashLen = 0, tokenLen = 0, headersLen;
+    const WCHAR *userHash, *token;
+    UINT32 tid = user_resolve_presence_title_id();
+    time_t now = time( NULL );
+    HRESULT hr;
+
+    if (!impl->xstsToken || !impl->userHash || !impl->xuid) return E_UNEXPECTED;
+    if (!impl->deviceToken || !impl->titleToken) return S_FALSE;
+    if (last_publish && now != (time_t)-1 && (now - last_publish) < 30) return S_OK;
+
+    snprintf( body, sizeof(body), "{\"id\":\"%u\",\"state\":\"active\"}", tid );
+    swprintf( path, ARRAY_SIZE(path), L"/users/xuid(%llu)/devices/current/titles/current",
+              (unsigned long long)impl->xuid );
+
+    userHash = WindowsGetStringRawBuffer( impl->userHash, &userHashLen );
+    token = WindowsGetStringRawBuffer( impl->xstsToken, &tokenLen );
+    headersLen = (UINT32)(wcslen( L"Content-Type: application/json\r\nx-xbl-contract-version: 3\r\nAuthorization: XBL3.0 x=;" )
+                 + userHashLen + tokenLen + 8);
+    if (!(headers = calloc( headersLen + 1, sizeof(WCHAR) ))) return E_OUTOFMEMORY;
+    wcscpy( headers, L"Content-Type: application/json\r\nx-xbl-contract-version: 3\r\nAuthorization: XBL3.0 x=" );
+    wcsncat( headers, userHash, userHashLen );
+    wcscat( headers, L";" );
+    wcsncat( headers, token, tokenLen );
+
+    hr = http_request( L"POST", L"userpresence.xboxlive.com", path, body, headers, ACCEPT_JSON, &buffer, &bufferSize );
+    {
+        FILE *df = fopen( "/home/perfect/OrionBE/logs/presence-publish.txt", "a" );
+        if (df)
+        {
+            fprintf( df, "publish hr=%#lx tid=%u body=%s bytes=%zu\n", (unsigned long)hr, tid, body, bufferSize );
+            if (buffer && bufferSize) fwrite( buffer, 1, bufferSize < 500 ? bufferSize : 500, df );
+            fputc( '\n', df );
+            fclose( df );
+        }
+    }
+    if (SUCCEEDED(hr))
+    {
+        last_publish = now;
+        TRACE( "Published Xbox presence online for TitleId %u.\n", tid );
+    }
+    else
+        WARN( "Presence publish failed, hr %#lx.\n", hr );
+
+    free( headers );
+    free( buffer );
     return hr;
 }
 
@@ -906,6 +1060,11 @@ static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingP
     newToken = NULL;
     newUserHash = NULL;
     newRelyingParty = NULL;
+
+    /* Game posts Windows SCID presence which 403s with Android TitleToken; publish matching presence ourselves. */
+    if (impl->deviceToken && impl->titleToken &&
+        relyingParty && !strcmp( relyingParty, "http://xboxlive.com" ))
+        user_publish_presence_online( impl );
 
 cleanup:
     free( body );
