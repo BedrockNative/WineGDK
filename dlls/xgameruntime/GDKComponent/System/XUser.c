@@ -261,6 +261,9 @@ static const char *user_GetRelyingParty( struct XUser *impl, const URL_COMPONENT
     if (best) return best->relyingParty;
     if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "playfabapi.com" ))
         return "http://playfab.xboxlive.com/";
+    /* Realms (overview/profile tab + Realms list) validates XSTS for its own RP; xboxlive.com -> 401. */
+    if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "realms.minecraft.net" ))
+        return "https://pocket.realms.minecraft.net/";
     return "http://xboxlive.com";
 }
 
