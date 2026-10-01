@@ -1124,6 +1124,13 @@ static BOOL url_wants_title_claims( const URL_COMPONENTSA *url, const char *rely
         return FALSE;
     if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "profile.xboxlive.com" ))
         return FALSE;
+    /* Android title claims make achievements for the Windows title (Overview tab) come back empty. */
+    if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "achievements.xboxlive.com" ))
+        return FALSE;
+    if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "userstats.xboxlive.com" ))
+        return FALSE;
+    if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "titlehub.xboxlive.com" ))
+        return FALSE;
     if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "userpresence.xboxlive.com" ))
     {
         /* Prefer title claims only for Online publish; reads stay UserToken-only. */
