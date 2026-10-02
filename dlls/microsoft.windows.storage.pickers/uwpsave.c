@@ -36,6 +36,26 @@ WINE_DEFAULT_DEBUG_CHANNEL(pickers);
 /* Windows.Storage.Pickers.IFileSavePicker {3286ffcb-617f-4cc5-af6a-b3fdf29ad145} */
 DEFINE_GUID( IID_IOrionUwpFileSavePicker, 0x3286ffcb, 0x617f, 0x4cc5, 0xaf, 0x6a, 0xb3, 0xfd, 0xf2, 0x9a, 0xd1, 0x45 );
 
+/* IInitializeWithWindow {3E68D4BD-7135-4D10-8018-9FB6D9F33FA1}: desktop apps call Initialize(hwnd) on the picker */
+DEFINE_GUID( IID_IOrionInitializeWithWindow, 0x3e68d4bd, 0x7135, 0x4d10, 0x80, 0x18, 0x9f, 0xb6, 0xd9, 0xf3, 0x3f, 0xa1 );
+
+typedef struct IOrionInitializeWithWindow IOrionInitializeWithWindow;
+
+typedef struct IOrionInitializeWithWindowVtbl
+{
+    BEGIN_INTERFACE
+    HRESULT (WINAPI *QueryInterface)( IOrionInitializeWithWindow *iface, REFIID iid, void **out );
+    ULONG (WINAPI *AddRef)( IOrionInitializeWithWindow *iface );
+    ULONG (WINAPI *Release)( IOrionInitializeWithWindow *iface );
+    HRESULT (WINAPI *Initialize)( IOrionInitializeWithWindow *iface, HWND hwnd );
+    END_INTERFACE
+} IOrionInitializeWithWindowVtbl;
+
+struct IOrionInitializeWithWindow
+{
+    const IOrionInitializeWithWindowVtbl *lpVtbl;
+};
+
 typedef struct IOrionUwpFileSavePicker IOrionUwpFileSavePicker;
 
 typedef struct IOrionUwpFileSavePickerVtbl
@@ -72,6 +92,8 @@ struct IOrionUwpFileSavePicker
 struct uwp_save_picker
 {
     IOrionUwpFileSavePicker iface;
+    IOrionInitializeWithWindow init_iface;
+    HWND hwnd;
     LONG ref;
     CRITICAL_SECTION cs;
     int start_location;
@@ -106,6 +128,12 @@ static HRESULT WINAPI uwp_save_QueryInterface( IOrionUwpFileSavePicker *iface, R
     {
         *out = &impl->iface;
         IUnknown_AddRef( (IUnknown *)*out );
+        return S_OK;
+    }
+    if (IsEqualGUID( iid, &IID_IOrionInitializeWithWindow ))
+    {
+        *out = &impl->init_iface;
+        IUnknown_AddRef( (IUnknown *)&impl->iface );
         return S_OK;
     }
 
@@ -307,6 +335,42 @@ static HRESULT WINAPI uwp_save_PickSaveFileAsync( IOrionUwpFileSavePicker *iface
     return hr;
 }
 
+static inline struct uwp_save_picker *impl_from_init( IOrionInitializeWithWindow *iface )
+{
+    return CONTAINING_RECORD( iface, struct uwp_save_picker, init_iface );
+}
+
+static HRESULT WINAPI uwp_init_QueryInterface( IOrionInitializeWithWindow *iface, REFIID iid, void **out )
+{
+    return uwp_save_QueryInterface( &impl_from_init( iface )->iface, iid, out );
+}
+
+static ULONG WINAPI uwp_init_AddRef( IOrionInitializeWithWindow *iface )
+{
+    return uwp_save_AddRef( &impl_from_init( iface )->iface );
+}
+
+static ULONG WINAPI uwp_init_Release( IOrionInitializeWithWindow *iface )
+{
+    return uwp_save_Release( &impl_from_init( iface )->iface );
+}
+
+static HRESULT WINAPI uwp_init_Initialize( IOrionInitializeWithWindow *iface, HWND hwnd )
+{
+    struct uwp_save_picker *impl = impl_from_init( iface );
+    TRACE( "iface %p, hwnd %p.\n", iface, hwnd );
+    impl->hwnd = hwnd;
+    return S_OK;
+}
+
+static const IOrionInitializeWithWindowVtbl uwp_init_vtbl =
+{
+    uwp_init_QueryInterface,
+    uwp_init_AddRef,
+    uwp_init_Release,
+    uwp_init_Initialize,
+};
+
 static const IOrionUwpFileSavePickerVtbl uwp_save_vtbl =
 {
     uwp_save_QueryInterface,
@@ -385,6 +449,7 @@ static HRESULT WINAPI uwp_factory_ActivateInstance( IActivationFactory *iface, I
     if (!instance) return E_POINTER;
     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
     impl->iface.lpVtbl = &uwp_save_vtbl;
+    impl->init_iface.lpVtbl = &uwp_init_vtbl;
     impl->ref = 1;
     impl->start_location = 9; /* PickerLocationId::Unspecified */
     InitializeCriticalSectionEx( &impl->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO );
