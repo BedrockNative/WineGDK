@@ -44,6 +44,8 @@ HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **fa
         IActivationFactory_QueryInterface( file_save_picker_factory, &IID_IActivationFactory, (void **)factory );
     else if (!wcscmp( buffer, RuntimeClass_Microsoft_Windows_Storage_Pickers_FolderPicker ))
         IActivationFactory_QueryInterface( folder_picker_factory, &IID_IActivationFactory, (void **)factory );
+    else if (!wcscmp( buffer, L"Windows.Storage.StorageFile" ))
+        IActivationFactory_QueryInterface( storage_file_factory, &IID_IActivationFactory, (void **)factory );
 
     if (*factory) return S_OK;
     FIXME( "class %s not implemented\n", debugstr_hstring( classid ) );

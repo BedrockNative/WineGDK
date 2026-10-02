@@ -59,6 +59,9 @@ extern IActivationFactory *file_open_picker_factory;
 extern IActivationFactory *file_save_picker_factory;
 extern IActivationFactory *folder_picker_factory;
 
+/* storagefile.c */
+extern IActivationFactory *storage_file_factory;
+
 /* dialog.c */
 enum picker_kind
 {

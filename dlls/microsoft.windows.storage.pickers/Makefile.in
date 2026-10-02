@@ -11,5 +11,6 @@ SOURCES = \
 	map.c \
 	microsoft.windows.storage.pickers.idl \
 	picker.c \
+	storagefile.c \
 	unixlib.c \
 	vector.c
