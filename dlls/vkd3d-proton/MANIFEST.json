@@ -1,0 +1,10 @@
+{
+  "source": "Local patched vkd3d-proton checkout, patched-install",
+  "commit": "dd14164854b420409c68911a5159dd56ab7690eb",
+  "files": {
+    "x86_64-windows/d3d12.dll": "89aaac2fbcaf9af8465f0bd62090cad3e074bf476785a7bda3e0e6636baeaf3f",
+    "x86_64-windows/d3d12core.dll": "9f1d8ddec4dcf659995dfc1704175de24be1a4e1ed373d949a11a85f124bf31d",
+    "i386-windows/d3d12.dll": "6a0d66f45197d96c408a76a237677676f45deb0757ab7c9ee8d2f47d8753b9f4",
+    "i386-windows/d3d12core.dll": "a3cfdeadb5337aefcb3929fb14e7869fd19a75e4c2e48309dcf17049fff48b8d"
+  }
+}

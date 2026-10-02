@@ -1,0 +1,6 @@
+{
+  "source": "User-supplied original native xgameruntime.dll, renamed for XThreading delegation",
+  "files": {
+    "x86_64-windows/xgameruntime.dll.threading": "226778cfbe2df9f18bcbaf66f6ee6c0390d9559def60be0f4d49f843fbcce1c0"
+  }
+}

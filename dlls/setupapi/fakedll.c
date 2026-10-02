@@ -202,10 +202,28 @@ static void extract_16bit_image( IMAGE_NT_HEADERS *nt, void **data, SIZE_T *size
     }
 }
 
+/* Native components supplied with WineGDK may be copied without a Wine signature. */
+static BOOL is_native_companion( const WCHAR *name )
+{
+    static const WCHAR * const names[] =
+    {
+        L"xgameruntime.dll.threading", L"d3d8.dll", L"d3d9.dll", L"d3d10core.dll",
+        L"d3d11.dll", L"dxgi.dll", L"d3d12.dll", L"d3d12core.dll"
+    };
+    const WCHAR *basename = wcsrchr( name, '\\' );
+    unsigned int i;
+
+    if (basename) name = basename + 1;
+    for (i = 0; i < ARRAY_SIZE(names); i++)
+        if (!wcsicmp( name, names[i] )) return TRUE;
+    return FALSE;
+}
+
 /* read in the contents of a file into the global file buffer */
 /* return 1 on success, 0 on nonexistent file, -1 on other error */
 static int read_file( const WCHAR *name, void **data, SIZE_T *size )
 {
+    BOOL native_companion = is_native_companion( name );
     struct stat st;
     int fd, ret = -1;
     size_t header_size;
@@ -234,11 +252,13 @@ static int read_file( const WCHAR *name, void **data, SIZE_T *size )
     dos = file_buffer;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) goto done;
     if (dos->e_lfanew < sizeof(*dos) + 32) goto done;
-    if (memcmp( dos + 1, builtin_signature, strlen(builtin_signature) + 1 ) &&
+    if (!native_companion && memcmp( dos + 1, builtin_signature, strlen(builtin_signature) + 1 ) &&
         memcmp( dos + 1, fakedll_signature, strlen(fakedll_signature) + 1 )) goto done;
     if (dos->e_lfanew + FIELD_OFFSET(IMAGE_NT_HEADERS,OptionalHeader.MajorLinkerVersion) > header_size)
         goto done;
     nt = (IMAGE_NT_HEADERS *)((char *)file_buffer + dos->e_lfanew);
+    if (native_companion && (nt->Signature != IMAGE_NT_SIGNATURE ||
+                            !(nt->FileHeader.Characteristics & IMAGE_FILE_DLL))) goto done;
     if (nt->Signature == IMAGE_NT_SIGNATURE && nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR_MAGIC)
     {
         /* wrong 32/64 type, pretend it doesn't exist */
@@ -444,13 +464,21 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
     len = lstrlenW( name );
     if (build_dir) maxlen = lstrlenW(build_dir) + ARRAY_SIZE(L"\\programs") + len + 1;
     while ((path = enum_load_path( i++ ))) maxlen = max( maxlen, lstrlenW(path) );
-    maxlen += ARRAY_SIZE(pe_dir) + len + 1;
+    maxlen += ARRAY_SIZE(pe_dir) + ARRAY_SIZE(L"\\native") + len + 1;
 
     if (!(file = malloc( maxlen * sizeof(WCHAR) ))) return NULL;
 
     pos = maxlen - len - 1;
     lstrcpyW( file + pos, name );
     file[--pos] = '\\';
+
+    for (i = 0; (path = enum_load_path( i )); i++)
+    {
+        ptr = prepend( file + pos, pe_dir, lstrlenW(pe_dir) );
+        ptr = prepend( ptr, L"\\native", lstrlenW(L"\\native") );
+        ptr = prepend( ptr, path, lstrlenW(path) );
+        if ((res = read_file( ptr, &data, size ))) goto done;
+    }
 
     if (build_dir)
     {
@@ -895,12 +923,36 @@ static BOOL CALLBACK register_resource( HMODULE module, LPCWSTR type, LPWSTR nam
 
 static void register_fake_dll( const WCHAR *name, const void *data, size_t size, struct list *delay_copy )
 {
+    const IMAGE_DOS_HEADER *dos = data;
     const IMAGE_RESOURCE_DIRECTORY *resdir;
     LDR_RESOURCE_INFO info;
     HRESULT hr = S_OK;
     HMODULE module = (HMODULE)((ULONG_PTR)data | 1);
     struct dll_data dll_data = { delay_copy, name };
     WCHAR buffer[MAX_PATH];
+
+    if (is_native_companion( name ) &&
+        memcmp( dos + 1, builtin_signature, sizeof(builtin_signature) ) &&
+        memcmp( dos + 1, fakedll_signature, sizeof(fakedll_signature) ))
+    {
+        const WCHAR *basename = wcsrchr( name, '\\' );
+        HKEY key;
+        WCHAR *ext;
+
+        if (basename) name = basename + 1;
+        if (!wcsicmp( name, L"xgameruntime.dll.threading" )) return;
+        lstrcpyW( buffer, name );
+        if ((ext = wcsrchr( buffer, '.' ))) *ext = 0;
+        if (!RegCreateKeyExW( HKEY_CURRENT_USER, L"Software\\Wine\\DllOverrides", 0, NULL, 0,
+                             KEY_QUERY_VALUE | KEY_SET_VALUE, NULL, &key, NULL ))
+        {
+            /* Set the package default only when the user has no override. */
+            if (RegQueryValueExW( key, buffer, NULL, NULL, NULL, NULL ) == ERROR_FILE_NOT_FOUND)
+                RegSetValueExW( key, buffer, 0, REG_SZ, (const BYTE *)L"native,builtin", sizeof(L"native,builtin") );
+            RegCloseKey( key );
+        }
+        return;
+    }
 
     EnumResourceNamesW( module, (WCHAR*)RT_MANIFEST, register_manifest, (LONG_PTR)&dll_data );
 
@@ -1067,6 +1119,13 @@ static BOOL create_wildcard_dlls( const WCHAR *dirname, const WCHAR *wildcard, B
     }
     lstrcpyW( dest, dirname );
     if ((p = wcsrchr( dest, '\\' ))) p[1] = 0;  /* remove wildcard */
+
+    /* Native packages take precedence over the builtin copies below. */
+    for (i = 0; (path = enum_load_path( i )); i++)
+    {
+        swprintf( file, maxlen, L"%s\\native%s", path, pe_dir );
+        install_lib_dir( dest, file, wildcard, NULL, delete );
+    }
 
     if (build_dir)
     {

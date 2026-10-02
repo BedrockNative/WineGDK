@@ -1,0 +1,8 @@
+NATIVE_DATA = \
+	README.md \
+	MANIFEST.json \
+	x64-GameInputBridge.dll \
+	x64-GameInputRawInputProxy.exe \
+	x64-GameInputRedist.dll \
+	x64-GameInputRedistService.exe \
+	x86-GameInputRedist.dll

@@ -1,0 +1,14 @@
+{
+  "source": "GameInputRedist.msi supplied by the user",
+  "source_sha256": "4e325dbc8a6853ea7786504f6f326bee37a085b799d262a5ec296df95cc8601a",
+  "version": "2.2.26100.6106",
+  "files": {
+    "x64-GameInputBridge.dll": "00a5255333be1db3006485f5a5c6a9e1e42ccdb1d7ba35d05aeafedc9f1bc5c5",
+    "x64-GameInputRawInputProxy.exe": "76638d16c9bbd6c87b4b64bdbbcce166b2f83f261fc756ec6714a5a5f667dd81",
+    "x64-GameInputRedist.dll": "ea6816937030fcf232de5c29628a0140d0643f81939b5ac47fb2a1f4bfaa374d",
+    "x64-GameInputRedistService.exe": "3959900e8a57e368e86f0b9d63585bc721d71ee78fba30086f224fc9981244c2",
+    "x86-GameInputRedist.dll": "6d3abcec490cc19cd3942b96ff5a539ff5dd371860f323caddbfc8a3a2283735"
+  },
+  "registry_values": 3902,
+  "setup_inf_sha256": "c73fed4b88c8cb6a08e006de17663453e44737e227533c499cc1d1af283f8fd1"
+}

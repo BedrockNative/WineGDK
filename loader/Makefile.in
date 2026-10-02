@@ -1,4 +1,5 @@
 SOURCES = \
+	gameinput.inf.in \
 	main.c \
 	preloader.c \
 	preloader_mac.c \
@@ -7,7 +8,7 @@ SOURCES = \
 	wine_info.plist.in
 
 PROGRAMS = $(WINELOADER_PROGRAMS)
-INSTALL_LIB = $(WINELOADER_PROGRAMS)
+INSTALL_LIB = $(WINELOADER_PROGRAMS) gameinput.inf
 UNIX_CFLAGS = -fPIE
 
 preloader_EXTRADEFS = -fno-builtin

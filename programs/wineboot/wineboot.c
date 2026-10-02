@@ -91,27 +91,28 @@ static WCHAR windowsdir[MAX_PATH];
 static const BOOL is_64bit = sizeof(void *) > sizeof(int);
 static SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION machines[8];
 
-/* retrieve the path to the wine.inf file */
-static WCHAR *get_wine_inf_path(void)
+/* retrieve the path to a prefix setup inf file */
+static WCHAR *get_wine_inf_path( const WCHAR *file )
 {
     WCHAR *dir, *name = NULL;
 
     if ((dir = _wgetenv( L"WINEBUILDDIR" )))
     {
-        if (!(name = malloc( sizeof(L"\\loader\\wine.inf") + wcslen(dir) * sizeof(WCHAR) )))
+        if (!(name = malloc( sizeof(L"\\loader\\") + (wcslen(dir) + wcslen(file)) * sizeof(WCHAR) )))
             return NULL;
         lstrcpyW( name, dir );
         lstrcatW( name, L"\\loader" );
     }
     else if ((dir = _wgetenv( L"WINEDATADIR" )))
     {
-        if (!(name = malloc( sizeof(L"\\wine.inf") + wcslen(dir) * sizeof(WCHAR) )))
+        if (!(name = malloc( sizeof(L"\\") + (wcslen(dir) + wcslen(file)) * sizeof(WCHAR) )))
             return NULL;
         lstrcpyW( name, dir );
     }
     else return NULL;
 
-    lstrcatW( name, L"\\wine.inf" );
+    lstrcatW( name, L"\\" );
+    lstrcatW( name, file );
     name[1] = '\\';  /* change \??\ to \\?\ */
     return name;
 }
@@ -1637,7 +1638,7 @@ static void update_user_profile(void)
 static void update_wineprefix( BOOL force )
 {
     const WCHAR *config_dir = _wgetenv( L"WINECONFIGDIR" );
-    WCHAR *inf_path = get_wine_inf_path();
+    WCHAR *inf_path = get_wine_inf_path( L"wine.inf" );
     int fd;
     struct stat st;
 
@@ -1684,6 +1685,19 @@ static void update_wineprefix( BOOL force )
                 count++;
             }
             DestroyWindow( hwnd );
+        }
+        /* The redistributable has an x64 service and a WoW64 client. */
+        if (machines[0].Machine == IMAGE_FILE_MACHINE_AMD64)
+        {
+            WCHAR *gameinput_inf = get_wine_inf_path( L"gameinput.inf" );
+
+            if (gameinput_inf && GetFileAttributesW( gameinput_inf ) != INVALID_FILE_ATTRIBUTES &&
+                (process = start_rundll32( gameinput_inf, L"DefaultInstall", IMAGE_FILE_MACHINE_TARGET_HOST )))
+            {
+                WaitForSingleObject( process, INFINITE );
+                CloseHandle( process );
+            }
+            free( gameinput_inf );
         }
         install_root_pnp_devices();
         update_user_profile();

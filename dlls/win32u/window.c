@@ -1441,6 +1441,18 @@ static LONG_PTR set_window_long_internal( HWND hwnd, INT offset, UINT size,
         style.styleNew = newval;
         release_win_ptr( win );
         send_message( hwnd, WM_STYLECHANGING, GWL_STYLE, (LPARAM)&style );
+        /* Minecraft's F11 transition leaves WS_DLGFRAME on its captionless
+         * top-level window. Use a borderless popup instead, otherwise Wine
+         * paints a three-pixel frame over the fullscreen Vulkan surface. */
+        if ((style.styleNew & (WS_CHILD | WS_CAPTION | WS_THICKFRAME)) == WS_DLGFRAME)
+        {
+            static const WCHAR bedrock_class[] = {'B','e','d','r','o','c','k',0};
+            WCHAR buffer[64];
+            UNICODE_STRING name = { 0, sizeof(buffer), buffer };
+
+            if (NtUserGetClassName( hwnd, FALSE, &name ) && !wcscmp( buffer, bedrock_class ))
+                style.styleNew = (style.styleNew & ~WS_DLGFRAME) | WS_POPUP;
+        }
         if (!(win = get_win_ptr( hwnd )) || win == WND_OTHER_PROCESS) return 0;
         newval = style.styleNew;
         /* WS_CLIPSIBLINGS can't be reset on top-level windows */
