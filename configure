@@ -1272,6 +1272,7 @@ enable_mfplay
 enable_mfreadwrite
 enable_mfsrcsnk
 enable_mgmtapi
+enable_microsoft_windows_storage_pickers
 enable_midimap
 enable_mlang
 enable_mmcndmgr
@@ -23343,6 +23344,7 @@ wine_fn_config_makefile dlls/mfreadwrite/tests enable_tests
 wine_fn_config_makefile dlls/mfsrcsnk enable_mfsrcsnk
 wine_fn_config_makefile dlls/mfsrcsnk/tests enable_tests
 wine_fn_config_makefile dlls/mgmtapi enable_mgmtapi
+wine_fn_config_makefile dlls/microsoft.windows.storage.pickers enable_microsoft_windows_storage_pickers
 wine_fn_config_makefile dlls/midimap enable_midimap
 wine_fn_config_makefile dlls/mlang enable_mlang
 wine_fn_config_makefile dlls/mlang/tests enable_tests
