@@ -24,6 +24,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <new>
 
 #ifndef IWINEASYNC_HPP
 #define IWINEASYNC_HPP
@@ -100,17 +101,18 @@ private:
     std::atomic_long ref{ 1 };
     std::mutex mutex;
 
-    IWineAsyncOperationCompletedHandler *handler;
-    IInspectable *IInspectable_outer;
-    IErrorInfo *errorInfo;
-    IUnknown *invoker;
+    IWineAsyncOperationCompletedHandler *handler = nullptr;
+    IInspectable *IInspectable_outer = nullptr;
+    IErrorInfo *errorInfo = nullptr;
+    IUnknown *invoker = nullptr;
 
-    async_operation_callback callback;
-    AsyncStatus status;
-    PROPVARIANT result;
-    HRESULT hr;
-    TP_WORK *async_run_work;
-    PVOID param;
+    async_operation_callback callback = nullptr;
+    AsyncStatus status = Started;
+    bool closed = false;
+    PROPVARIANT result{};
+    HRESULT hr = S_OK;
+    TP_WORK *async_run_work = nullptr;
+    PVOID param = nullptr;
 };
 
 template<typename T>
@@ -119,7 +121,7 @@ class AsyncOperation
 {
 public:
     AsyncOperation() = default;
-    virtual ~AsyncOperation() = default;
+    virtual ~AsyncOperation() { if (info) info->Release(); }
 
         /* IUnknown Methods */
     HRESULT WINAPI
@@ -158,7 +160,7 @@ public:
 
 private:
     std::atomic_long ref{ 1 };
-    IWineAsyncInfoImpl *info;
+    IWineAsyncInfoImpl *info = nullptr;
 };
 
 class AsyncAction final
@@ -166,7 +168,7 @@ class AsyncAction final
 {
 public:
     AsyncAction() = default;
-    virtual ~AsyncAction() = default;
+    virtual ~AsyncAction() { if (info) info->Release(); }
 
     /* IUnknown Methods */
     HRESULT WINAPI
@@ -205,7 +207,7 @@ public:
 
 private:
     std::atomic_long ref{ 1 };
-    IWineAsyncInfoImpl *info;
+    IWineAsyncInfoImpl *info = nullptr;
 };
 
 // NOTE: Do not create a non-static instance of this object.
@@ -213,7 +215,7 @@ class AsyncActionCompletedHandler final
     : public IAsyncActionCompletedHandler
 {
 public:
-    virtual ~AsyncActionCompletedHandler() = default;
+    virtual ~AsyncActionCompletedHandler() { if (event) CloseHandle( event ); }
     
     /* IUnknown Methods */
     HRESULT WINAPI
@@ -266,40 +268,41 @@ public:
     /* Internal methods */
     static DWORD await_AsyncAction( IAsyncAction *async, DWORD timeout )
     {
-        HRESULT hr;
-        DWORD ret;
-        auto handler = new AsyncActionCompletedHandler();
-        handler->event = CreateEventW( NULL, FALSE, FALSE, NULL );
-
-        hr = async->put_Completed( handler );
-        if ( FAILED( hr ) ) return hr;
-
-        ret = WaitForSingleObject( handler->event, timeout );
-        CloseHandle( handler->event );
+        if (!async) return E_POINTER;
+        auto handler = new (std::nothrow) AsyncActionCompletedHandler();
+        if (!handler) return E_OUTOFMEMORY;
+        if (!(handler->event = CreateEventW( nullptr, FALSE, FALSE, nullptr )))
+        {
+            DWORD error = GetLastError();
+            handler->Release();
+            return HRESULT_FROM_WIN32( error );
+        }
+        HRESULT hr = async->put_Completed( handler );
+        DWORD ret = FAILED(hr) ? static_cast<DWORD>(hr) : WaitForSingleObject( handler->event, timeout );
         handler->Release();
-
         return ret;
     }
 
     static DWORD await_CancellableAsyncAction( IAsyncAction *async, HANDLE event, DWORD timeout )
     {
-        HRESULT hr;
-        DWORD ret;
-        auto handler = new AsyncActionCompletedHandler();
-        handler->event = event;
-
-        hr = async->put_Completed( handler );
-        if ( FAILED( hr ) ) return hr;
-
-        ret = WaitForSingleObject( handler->event, timeout );
-        CloseHandle( handler->event );
+        if (!async || !event) return E_POINTER;
+        auto handler = new (std::nothrow) AsyncActionCompletedHandler();
+        if (!handler) return E_OUTOFMEMORY;
+        if (!DuplicateHandle( GetCurrentProcess(), event, GetCurrentProcess(), &handler->event,
+                              0, FALSE, DUPLICATE_SAME_ACCESS ))
+        {
+            DWORD error = GetLastError();
+            handler->Release();
+            return HRESULT_FROM_WIN32( error );
+        }
+        HRESULT hr = async->put_Completed( handler );
+        DWORD ret = FAILED(hr) ? static_cast<DWORD>(hr) : WaitForSingleObject( handler->event, timeout );
         handler->Release();
-
         return ret;
     }
 
 private:
-    HANDLE event;
+    HANDLE event = nullptr;
     std::atomic_long ref{ 1 };
 };
 
@@ -309,7 +312,7 @@ class AsyncOperationCompletedHandler final
     : public IAsyncOperationCompletedHandler<T>
 {
 public:
-    virtual ~AsyncOperationCompletedHandler() = default;
+    virtual ~AsyncOperationCompletedHandler() { if (event) CloseHandle( event ); }
     
     /* IUnknown Methods */
     HRESULT WINAPI
@@ -362,40 +365,41 @@ public:
     /* Internal methods */
     static DWORD await_AsyncOperation( IAsyncOperation<T> *async, DWORD timeout )
     {
-        HRESULT hr;
-        DWORD ret;
-        auto handler = new AsyncOperationCompletedHandler<T>();
-        handler->event = CreateEventW( NULL, FALSE, FALSE, NULL );
-
-        hr = async->put_Completed( handler );
-        if ( FAILED( hr ) ) return hr;
-
-        ret = WaitForSingleObject( handler->event, timeout );
-        CloseHandle( handler->event );
+        if (!async) return E_POINTER;
+        auto handler = new (std::nothrow) AsyncOperationCompletedHandler<T>();
+        if (!handler) return E_OUTOFMEMORY;
+        if (!(handler->event = CreateEventW( nullptr, FALSE, FALSE, nullptr )))
+        {
+            DWORD error = GetLastError();
+            handler->Release();
+            return HRESULT_FROM_WIN32( error );
+        }
+        HRESULT hr = async->put_Completed( handler );
+        DWORD ret = FAILED(hr) ? static_cast<DWORD>(hr) : WaitForSingleObject( handler->event, timeout );
         handler->Release();
-
         return ret;
     }
 
     static DWORD await_CancellableAsyncOperation( IAsyncOperation<T> *async, HANDLE event, DWORD timeout )
     {
-        HRESULT hr;
-        DWORD ret;
-        auto handler = new AsyncOperationCompletedHandler<T>();
-        handler->event = event;
-
-        hr = async->put_Completed( handler );
-        if ( FAILED( hr ) ) return hr;
-
-        ret = WaitForSingleObject( handler->event, timeout );
-        CloseHandle( handler->event );
+        if (!async || !event) return E_POINTER;
+        auto handler = new (std::nothrow) AsyncOperationCompletedHandler<T>();
+        if (!handler) return E_OUTOFMEMORY;
+        if (!DuplicateHandle( GetCurrentProcess(), event, GetCurrentProcess(), &handler->event,
+                              0, FALSE, DUPLICATE_SAME_ACCESS ))
+        {
+            DWORD error = GetLastError();
+            handler->Release();
+            return HRESULT_FROM_WIN32( error );
+        }
+        HRESULT hr = async->put_Completed( handler );
+        DWORD ret = FAILED(hr) ? static_cast<DWORD>(hr) : WaitForSingleObject( handler->event, timeout );
         handler->Release();
-
         return ret;
     }
 
 private:
-    HANDLE event;
+    HANDLE event = nullptr;
     std::atomic_long ref{ 1 };
 };
 

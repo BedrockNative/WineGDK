@@ -45,6 +45,82 @@ static void check_interface_( unsigned int line, void *obj, const IID *iid )
     IUnknown_Release( unk );
 }
 
+static void test_JsonArrayVector(void)
+{
+    static const WCHAR name[] = L"Windows.Data.Json.JsonValue";
+    IJsonValueStatics *statics = NULL;
+    IVector_IJsonValue *vector = NULL;
+    IJsonValue *json = NULL, *value = NULL;
+    IJsonArray *array = NULL;
+    UINT32 size = 0;
+    BOOLEAN boolean;
+    HSTRING str;
+    HRESULT hr;
+
+    hr = WindowsCreateString( name, ARRAY_SIZE(name) - 1, &str );
+    ok( hr == S_OK, "Creating class name returned %#lx.\n", hr );
+    if (FAILED(hr)) return;
+    hr = RoGetActivationFactory( str, &IID_IJsonValueStatics, (void **)&statics );
+    WindowsDeleteString( str );
+    if (FAILED(hr))
+    {
+        win_skip( "JsonValue runtimeclass unavailable, hr %#lx.\n", hr );
+        return;
+    }
+    hr = WindowsCreateString( L"[true]", 6, &str );
+    ok( hr == S_OK, "Creating JSON string returned %#lx.\n", hr );
+    if (FAILED(hr)) goto cleanup;
+    hr = IJsonValueStatics_Parse( statics, str, &json );
+    WindowsDeleteString( str );
+    ok( hr == S_OK, "Parsing JSON array returned %#lx.\n", hr );
+    if (FAILED(hr)) goto cleanup;
+    hr = IJsonValue_GetArray( json, &array );
+    ok( hr == S_OK, "GetArray returned %#lx.\n", hr );
+    if (FAILED(hr)) goto cleanup;
+    hr = IJsonArray_QueryInterface( array, &IID_IVector_IJsonValue, (void **)&vector );
+    ok( hr == S_OK, "Getting vector interface returned %#lx.\n", hr );
+    if (FAILED(hr)) goto cleanup;
+
+    hr = IVector_IJsonValue_get_Size( vector, &size );
+    ok( hr == S_OK && size == 1, "Initial size %u, hr %#lx.\n", size, hr );
+    hr = IVector_IJsonValue_get_Size( vector, NULL );
+    ok( hr == E_POINTER, "NULL size returned %#lx.\n", hr );
+    hr = IVector_IJsonValue_GetAt( vector, 0, NULL );
+    ok( hr == E_INVALIDARG, "NULL value output returned %#lx.\n", hr );
+    value = (void *)0xdeadbeef;
+    hr = IVector_IJsonValue_GetAt( vector, 1, &value );
+    ok( hr == E_BOUNDS, "Out of bounds GetAt returned %#lx.\n", hr );
+    ok( !value, "Out of bounds GetAt left value %p.\n", value );
+    value = NULL;
+    hr = IVector_IJsonValue_Append( vector, NULL );
+    ok( hr == E_INVALIDARG, "Appending NULL returned %#lx.\n", hr );
+    hr = IVector_IJsonValue_get_Size( vector, &size );
+    ok( hr == S_OK && size == 1, "Size after rejected append %u, hr %#lx.\n", size, hr );
+    hr = IVector_IJsonValue_GetAt( vector, 0, &value );
+    ok( hr == S_OK, "GetAt(0) returned %#lx.\n", hr );
+    if (FAILED(hr)) goto cleanup;
+    hr = IVector_IJsonValue_Append( vector, value );
+    ok( hr == S_OK, "Append returned %#lx.\n", hr );
+    hr = IVector_IJsonValue_get_Size( vector, &size );
+    ok( hr == S_OK && size == 2, "Size after append %u, hr %#lx.\n", size, hr );
+
+    IVector_IJsonValue_Release( vector );
+    vector = NULL;
+    IJsonArray_Release( array );
+    array = NULL;
+    IJsonValue_Release( json );
+    json = NULL;
+    hr = IJsonValue_GetBoolean( value, &boolean );
+    ok( hr == S_OK && boolean, "Returned value did not survive array release, hr %#lx.\n", hr );
+
+cleanup:
+    if (value) IJsonValue_Release( value );
+    if (vector) IVector_IJsonValue_Release( vector );
+    if (array) IJsonArray_Release( array );
+    if (json) IJsonValue_Release( json );
+    IJsonValueStatics_Release( statics );
+}
+
 static void test_JsonArrayStatics(void)
 {
     static const WCHAR *json_value_statics_name = L"Windows.Data.Json.JsonValue";
@@ -850,6 +926,7 @@ START_TEST(web)
     ok( hr == S_OK, "RoInitialize failed, hr %#lx\n", hr );
 
     test_JsonArrayStatics();
+    test_JsonArrayVector();
     test_JsonObjectStatics();
     test_JsonValueStatics();
 

@@ -29,6 +29,11 @@ class XThreadingImpl :
     public IXThreadingImpl
 {
 public:
+    ~XThreadingImpl()
+    {
+        if (time_sensitive_tls != TLS_OUT_OF_INDEXES) TlsFree( time_sensitive_tls );
+    }
+
     HRESULT WINAPI QueryInterface( REFIID iid, void **out )
     {
         TRACE( "iface %p, iid %s, out %p.\n", this, debugstr_guid( &iid ), out );
@@ -222,7 +227,9 @@ public:
 
     HRESULT WINAPI XThreadSetTimeSensitive( BOOLEAN isTimeSensitiveThread ) override
     {
-        this->isTimeSensitiveThread = isTimeSensitiveThread;
+        if (time_sensitive_tls == TLS_OUT_OF_INDEXES) return E_OUTOFMEMORY;
+        if (!TlsSetValue( time_sensitive_tls, reinterpret_cast<void *>(static_cast<UINT_PTR>(!!isTimeSensitiveThread)) ))
+            return HRESULT_FROM_WIN32( GetLastError() );
         return S_OK;
     }
 
@@ -236,17 +243,17 @@ public:
 
     void WINAPI XThreadAssertNotTimeSensitive() override
     {
-        if ( isTimeSensitiveThread )
-            assert( false );
+        if (XThreadIsTimeSensitive() && IsDebuggerPresent()) DebugBreak();
     }
 
     BOOLEAN WINAPI XThreadIsTimeSensitive() override
     {
-        return isTimeSensitiveThread;
+        if (time_sensitive_tls == TLS_OUT_OF_INDEXES) return FALSE;
+        return TlsGetValue( time_sensitive_tls ) != nullptr;
     }
 
 private:
-    BOOLEAN isTimeSensitiveThread{ false };
+    DWORD time_sensitive_tls{ TlsAlloc() };
     std::atomic_long ref{ 1 };
 };
 

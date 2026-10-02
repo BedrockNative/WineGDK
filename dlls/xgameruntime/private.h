@@ -49,24 +49,38 @@
 
 #include <xgameerr.h>
 #include <xsystem.h>
+#include <xgame.h>
+#include <xlauncher.h>
 #include <xgameruntimefeature.h>
 #include <xnetworking.h>
 #include <xuser.h>
 #include <xasync.h>
 #include <xasyncprovider.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "wine/unixlib.h"
+#ifdef __cplusplus
+}
+#endif
 #include "wine/debug.h"
 
 #define WIDL_using_Windows_Foundation
 #define WIDL_using_Windows_Foundation_Collections
 #include "windows.foundation.h"
+#define WIDL_using_Windows_Data_Json
+#include "windows.data.json.h"
 #define WIDL_using_Windows_Globalization
 #include "windows.globalization.h"
 #define WIDL_using_Windows_System_Profile
 #include "windows.system.profile.h"
+#define WIDL_using_Windows_Data_Json
+#include "windows.data.json.h"
 #define WIDL_using_Xodus
 #include "xodusprovider.h"
+
+#include "userprovider.h"
 
 #define RETURN_HR(hr)                                           TRACE("Returning HR %#lx\n", hr); return(hr)
 #define RETURN_LAST_ERROR()                                     return HRESULT_FROM_WIN32(GetLastError())
@@ -88,17 +102,29 @@
 
 #define FAIL_FAST_IF_FAILED(hr)                                 do { HRESULT __hrRet = hr; if (FAILED(__hrRet)) { FAIL_FAST_MSG("%s 0x%#lx", #hr, __hrRet); }} while (0)
 
-#define POLL_BUFFER_SIZE 2048
+#define POLL_BUFFER_SIZE 0x10008 /* UINT16 payload plus IPC header */
 #define XODUS_SOCKET_SUFFIX "xodus.sock"
 #define IPC_REQUEST_TIMEOUT_MS 5000
-#define XODUS_INTEROP 0
+#ifndef XODUS_INTEROP
+#define XODUS_INTEROP 1
+#endif
+
+extern BOOLEAN initializeCalled;
+extern BOOLEAN xodusAvailable;
+
+extern char *msaAppId;
+extern UINT32 titleId;
+extern BOOLEAN fullTrust;
 
 extern IXThreadingImpl *x_threading_impl;
 extern IXGameRuntimeFeatureImpl *x_game_runtime_feature;
 extern IXSystemImpl *x_system;
 extern IXSystemAnalyticsImpl *x_system_analytics;
 extern IXNetworkingImpl *x_networking;
-extern IXUserImpl *x_user;
+extern IXGameImpl *x_game;
+extern IXLauncherImpl *x_launcher;
+extern IXUserImpl6 *x_user;
+extern IXUserDeviceImpl *x_user_device;
 
 #ifdef __cplusplus
 extern ABI::Xodus::IIPCLayer *xodus_ipclayer;
@@ -109,6 +135,8 @@ extern IIPCLayer *xodus_ipclayer;
 extern IXodusService *xodus_service;
 extern IXodusXMLBuilder *xodus_xml_builder;
 #endif
+
+EXTERN_C HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, void **out );
 
 typedef struct _INITIALIZE_OPTIONS
 {
@@ -130,25 +158,10 @@ enum unix_funcs
     send_frame
 };
 
-extern unixlib_module_t unixlib;
 extern unixlib_handle_t unixhandle;
 
-extern LPCSTR msaAppId;
-extern UINT32 titleId;
-extern BOOLEAN fullTrust;
 
 typedef HRESULT (WINAPI *async_operation_callback)( IUnknown *invoker, PVOID param, PROPVARIANT *result );
-
-// Deference is for other modules to communicate with eachother through the same binary.
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, void **out );
-
-#ifdef __cplusplus
-}
-#endif
 
 #define DEFINE_ASYNC_COMPLETED_HANDLER( name, iface_type, async_type )                              \
     struct name                                                                                     \
@@ -166,6 +179,9 @@ HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, voi
                                                                                                     \
     static HRESULT WINAPI name##_QueryInterface( iface_type *iface, REFIID iid, void **out )        \
     {                                                                                               \
+        if (!out) return E_POINTER;                                                                             \
+        *out = NULL;                                                                                \
+        if (!iid) return E_INVALIDARG;                                                                          \
         if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IAgileObject ) ||           \
             IsEqualGUID( iid, &IID_##iface_type ))                                                  \
         {                                                                                           \
@@ -188,7 +204,7 @@ HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, voi
     {                                                                                               \
         struct name *impl = CONTAINING_RECORD( iface, struct name, iface_type##_iface );            \
         ULONG ref = InterlockedDecrement( &impl->refcount );                                        \
-        if (!ref) free( impl );                                                                     \
+        if (!ref) { CloseHandle( impl->event ); free( impl ); }                                                 \
         return ref;                                                                                 \
     }                                                                                               \
                                                                                                     \
@@ -217,7 +233,8 @@ HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, voi
                                                                                                     \
         if (!(impl = calloc( 1, sizeof(*impl) ))) return NULL;                                      \
         impl->iface_type##_iface.lpVtbl = &name##_vtbl;                                             \
-        impl->event = event;                                                                        \
+        if (!DuplicateHandle( GetCurrentProcess(), event, GetCurrentProcess(), &impl->event, 0, FALSE, DUPLICATE_SAME_ACCESS ))\
+        { free( impl ); return NULL; }                                                                          \
         impl->refcount = 1;                                                                         \
                                                                                                     \
         return &impl->iface_type##_iface;                                                           \
@@ -230,10 +247,13 @@ HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, voi
         HRESULT hr;                                                                                 \
         DWORD ret;                                                                                  \
                                                                                                     \
+        if (!async) return E_POINTER;                                                                           \
         event = CreateEventW( NULL, FALSE, FALSE, NULL );                                           \
+        if (!event) return HRESULT_FROM_WIN32( GetLastError() );                                                \
         handler = name##_create( event );                                                           \
+        if (!handler) { CloseHandle( event ); return E_OUTOFMEMORY; }                                           \
         hr = async_type##_put_Completed( async, handler );                                          \
-        if ( FAILED( hr ) ) return hr;                                                              \
+        if (FAILED(hr)) { iface_type##_Release( handler ); CloseHandle( event ); return hr; }                   \
         ret = WaitForSingleObject( event, timeout );                                                \
         CloseHandle( event );                                                                       \
         iface_type##_Release( handler );                                                            \

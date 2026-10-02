@@ -87,6 +87,7 @@ HRESULT WINAPI
 XodusIPCPacket::get_Magic( MagicHeaderType *out )
 {
     TRACE("iface %p, out %p.\n", this, out);
+    if (!out) return E_POINTER;
     *out = Magic;
     return S_OK;
 }
@@ -95,6 +96,7 @@ HRESULT WINAPI
 XodusIPCPacket::get_MessageType( UINT16 *out )
 {
     TRACE("iface %p, out %p.\n", this, out);
+    if (!out) return E_POINTER;
     *out = Message_Type;
     return S_OK;
 }
@@ -103,6 +105,7 @@ HRESULT WINAPI
 XodusIPCPacket::get_Message( Windows::Storage::Streams::IBuffer **out )
 {
     TRACE("iface %p, out %p.\n", this, out);
+    if (!out) return E_POINTER;
     *out = Message;
     Message->AddRef();
     return S_OK;
@@ -176,14 +179,6 @@ IPCResponseHandler::Invoke( IXodusIPCPacket *response )
 /**
  * MsaTokenResponse: Wraps Msa Token response packets sent by Xodus
  */
-MsaTokenResponse::MsaTokenResponse( 
-    HSTRING token,
-    ABI::Windows::Foundation::DateTime expiry )
-: Expiry(expiry)
-{
-    WindowsDuplicateString( token, &Token );
-}
-
 HRESULT WINAPI
 MsaTokenResponse::QueryInterface( REFIID iid, void **out ) noexcept
 {
@@ -223,7 +218,7 @@ MsaTokenResponse::Release() noexcept
 
     if ( !curr )
     {
-        WindowsDeleteString( Token );
+        if (token) free( const_cast<char *>(token) );
         delete this;
     }
 
@@ -231,10 +226,13 @@ MsaTokenResponse::Release() noexcept
 }
 
 HRESULT WINAPI
-MsaTokenResponse::get_Token( HSTRING *out )
+MsaTokenResponse::get_Token( const char **out )
 {
-    TRACE( "iface %p, out %p\n", this, out );
-    WindowsDuplicateString( Token, out );
+    TRACE( "iface %p, out %p.\n", this, out );
+    if (!out) return E_POINTER;
+    *out = nullptr;
+    if (!token) return E_UNEXPECTED;
+    if (!(*out = strdup( token ))) return E_OUTOFMEMORY;
     return S_OK;
 }
 
@@ -242,6 +240,7 @@ HRESULT WINAPI
 MsaTokenResponse::get_Expiry( ABI::Windows::Foundation::DateTime *out )
 {
     TRACE( "iface %p, out %p\n", this, out );
+    if (!out) return E_POINTER;
     *out = Expiry;
     return S_OK;
 }

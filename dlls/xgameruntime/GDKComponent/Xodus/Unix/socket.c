@@ -23,7 +23,9 @@
 #pragma makedep unix
 #endif
 
+#ifndef WINE_UNIX_LIB
 #define WINE_UNIX_LIB
+#endif
 
 #include "ntstatus.h"
 #include "windef.h"
@@ -102,12 +104,12 @@
 # define HAS_IRDA
 #endif
 
-#define POLL_BUFFER_SIZE 2048
+#define POLL_BUFFER_SIZE 0x10008 /* UINT16 payload plus IPC header */
 
 WINE_DEFAULT_DEBUG_CHANNEL(xodus);
 
 // Persist connection
-static int sockfd = 0;
+static int sockfd = -1;
 
 typedef struct _POLL_SOCKET_ARGS
 {
@@ -117,48 +119,62 @@ typedef struct _POLL_SOCKET_ARGS
 
 typedef struct _IPCFrame
 {
-    SIZE_T frameSize;
+    UINT32 frameSize;
     BYTE* frame;
 } IPCFrame;
 
 static NTSTATUS conn_sock( void *args )
 {
     struct sockaddr_un addr;
-    LPCSTR socket_suffix = (LPCSTR)args;
+    LPCSTR socket_suffix = args;
+    char *socket_path;
+    size_t len;
+    int error;
 
 #ifdef __linux__
     const char *runtime = getenv( "XDG_RUNTIME_DIR" );
-    if ( !runtime )
-        return E_NOT_VALID_STATE;
-#elif defined(__APPLE__)
+    if (!runtime || !*runtime) return STATUS_OBJECT_PATH_NOT_FOUND;
+#else
     const char *runtime = "/tmp";
 #endif
 
-    size_t len = strlen( runtime ) + strlen( socket_suffix ) + 1;
-    char *socket_path = malloc( len );
-
-    TRACE( "args %p\n", args );
-
-    if ( !socket_path )
-        return STATUS_NO_MEMORY;
-
-    snprintf( socket_path, len + 1, "%s/%s", runtime, socket_suffix );
+    if (!socket_suffix) return STATUS_INVALID_PARAMETER;
+    len = strlen( runtime ) + strlen( socket_suffix ) + 2;
+    if (len > sizeof(addr.sun_path)) return STATUS_NAME_TOO_LONG;
+    if (sockfd >= 0) return STATUS_SUCCESS;
+    if (!(socket_path = malloc( len ))) return STATUS_NO_MEMORY;
+    memcpy( socket_path, runtime, strlen( runtime ) );
+    socket_path[strlen( runtime )] = '/';
+    memcpy( socket_path + strlen( runtime ) + 1, socket_suffix, strlen( socket_suffix ) + 1 );
 
     sockfd = socket( AF_UNIX, SOCK_STREAM, 0 );
-    if ( sockfd < 0 ) 
-        return STATUS_ABANDONED;
+    if (sockfd < 0)
+    {
+        free( socket_path );
+        return STATUS_UNSUCCESSFUL;
+    }
 
     memset( &addr, 0, sizeof(addr) );
     addr.sun_family = AF_UNIX;
-    lstrcpynA( addr.sun_path, socket_path, sizeof(addr.sun_path) - 1 );
+    memcpy( addr.sun_path, socket_path, len );
 
-    if ( connect( sockfd, (struct sockaddr*)&addr, sizeof(addr) ) < 0 ) 
+    if (connect( sockfd, (struct sockaddr *)&addr, sizeof(addr) ) < 0)
     {
-        TRACE( "failed to load socket %s\n", socket_path );
-        TRACE( "socket connection failed with %d\n", errno );
+        error = errno;
+        WARN( "Failed to connect to Xodus socket %s: %s.\n", socket_path, strerror( error ) );
+        close( sockfd );
+        sockfd = -1;
+        free( socket_path );
         return STATUS_CONNECTION_REFUSED;
     }
 
+#ifdef SO_NOSIGPIPE
+    {
+        int enabled = 1;
+        setsockopt( sockfd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled) );
+    }
+#endif
+    free( socket_path );
     return STATUS_SUCCESS;
 }
 
@@ -172,8 +188,8 @@ static NTSTATUS poll_sock( void *args )
 
     TRACE( "args %p\n", args );
 
-    if ( !sockfd )
-        return STATUS_CONNECTION_INVALID;
+    if (sockfd < 0) return STATUS_CONNECTION_INVALID;
+    if (socket_args->curr_buffer_size >= POLL_BUFFER_SIZE) return STATUS_BUFFER_TOO_SMALL;
 
     fds[0].fd = sockfd;
     fds[0].events = POLLIN;
@@ -187,12 +203,17 @@ static NTSTATUS poll_sock( void *args )
 
     if ( fds[0].revents & POLLIN ) 
     {
-        n = read( sockfd, socket_args->curr_buffer + socket_args->curr_buffer_size, POLL_BUFFER_SIZE - socket_args->curr_buffer_size );
+        do
+            n = read( sockfd, socket_args->curr_buffer + socket_args->curr_buffer_size,
+                      POLL_BUFFER_SIZE - socket_args->curr_buffer_size );
+        while (n < 0 && errno == EINTR);
         if ( n <= 0 ) 
             return STATUS_CONNECTION_DISCONNECTED;
 
         socket_args->curr_buffer_size += n;
     }
+    else if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL))
+        return STATUS_CONNECTION_DISCONNECTED;
 
     return STATUS_SUCCESS;
 }
@@ -204,19 +225,18 @@ static NTSTATUS send_frm( void *args )
 
     TRACE( "args %p\n", args );
 
-    UINT32 magic = *(UINT32 *)frame->frame;
-    UINT16 type  = *(UINT16 *)(frame->frame + sizeof(UINT32));
-    UINT16 len   = *(UINT16 *)(frame->frame + sizeof(UINT32) + sizeof(UINT16));
-    BYTE* body  = frame->frame + 8;
-
-    TRACE("magic is %#x\n", magic);
-    TRACE("type is %d\n", type);
-    TRACE("len is %d\n", len);
-    TRACE("body is %s\n", body);
+    if (sockfd < 0) return STATUS_CONNECTION_INVALID;
+    if (!frame || !frame->frame || frame->frameSize < 8 || frame->frameSize > 0xffff + 8)
+        return STATUS_INVALID_PARAMETER;
 
     while ( sent < frame->frameSize )
     {
-        ssize_t n = write( sockfd, (char *)frame->frame + sent, frame->frameSize - sent );
+        ssize_t n;
+#ifdef MSG_NOSIGNAL
+        n = send( sockfd, (char *)frame->frame + sent, frame->frameSize - sent, MSG_NOSIGNAL );
+#else
+        n = send( sockfd, (char *)frame->frame + sent, frame->frameSize - sent, 0 );
+#endif
 
         if ( n < 0 )
         {
@@ -225,6 +245,7 @@ static NTSTATUS send_frm( void *args )
             return STATUS_CONNECTION_RESET;
         }
 
+        if (!n) return STATUS_CONNECTION_RESET;
         sent += n;
     }
 

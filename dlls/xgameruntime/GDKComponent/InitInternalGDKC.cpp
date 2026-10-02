@@ -27,148 +27,147 @@
 #include <libxml/tree.h>
 #include <ntstatus.h>
 #include <shlwapi.h>
+#include <errno.h>
+#include <limits.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(gdkct);
 
 using namespace ABI::Windows::Foundation;
 
-static BOOLEAN initializeCalled = FALSE;
+BOOLEAN initializeCalled = FALSE;
+BOOLEAN xodusAvailable = FALSE;
+static SRWLOCK initialize_lock = SRWLOCK_INIT;
 
-LPCSTR msaAppId;
+char *msaAppId;
 UINT32 titleId;
 BOOLEAN fullTrust;
 
-static HRESULT WINAPI
-InitializeXodusService()
+#if XODUS_INTEROP
+static HRESULT WINAPI InitializeXodusService()
 {
-    DWORD async;
+    IAsyncAction *action = nullptr;
     HRESULT hr;
+    DWORD wait;
+    NTSTATUS status;
 
-    IAsyncAction *pingAction = nullptr;
-
-    hr = xodus_ipclayer->InitializeSocket();
-    if ( FAILED( hr ) ) 
-    {
-        WARN("Socket initialization failed with %#lx\n", hr);
-        return hr;
-    }
-    hr = xodus_service->Ping( &pingAction );
-    if ( FAILED( hr ) ) 
-    {
-        WARN("Xodus Ping Dispatch failed with %#lx\n", hr);
-        return hr;
-    }
-
-    async = AsyncActionCompletedHandler::await_AsyncAction( pingAction, 10000 );
-    if ( async )
-    {
-        if ( async == STATUS_TIMEOUT )
-        {
-            WARN("Timeout while waiting for PING response.\n");
-            return HRESULT_FROM_WIN32( ERROR_TIMEOUT );
-        }
-            
-        WARN("Async action await failed. Status was %ld\n", async);
-        return E_FAIL;
-    }
-
-    hr = pingAction->GetResults();
-    if ( FAILED( hr ) )
-        WARN("PING response error. HR was %#lx\n", hr);
-
+    if ((status = __wine_init_unix_call())) return HRESULT_FROM_NT(status);
+    status = __wine_unix_call(__wine_unixlib_handle, conn_socket, (void *)XODUS_SOCKET_SUFFIX);
+    if (status) return HRESULT_FROM_NT(status);
+    unixhandle = __wine_unixlib_handle;
+    if (FAILED(hr = xodus_ipclayer->InitializeSocket())) return hr;
+    if (FAILED(hr = xodus_service->Ping(&action))) return hr;
+    wait = AsyncActionCompletedHandler::await_AsyncAction(action, IPC_REQUEST_TIMEOUT_MS);
+    if (!wait) hr = action->GetResults();
+    else hr = wait == STATUS_TIMEOUT ? HRESULT_FROM_WIN32(ERROR_TIMEOUT) : E_FAIL;
+    action->Release();
     return hr;
 }
+#endif
 
-static HRESULT WINAPI
-ObtainMsaAppId( INITIALIZE_OPTIONS *options )
+static HRESULT WINAPI ObtainMsaAppId(INITIALIZE_OPTIONS *options)
 {
-    HRESULT hr = S_OK;
-
-    CHAR filename[MAX_PATH], *last;
-
+    CHAR filename[MAX_PATH], *last, *app_id = nullptr;
+    UINT32 parsed_title_id = 0;
+    BOOLEAN parsed_full_trust = FALSE;
     xmlNodePtr root, child;
     xmlDocPtr config;
+    HRESULT hr = S_OK;
 
-    TRACE( "options %p.\n", options );
-
-    if ( options )
+    if (options)
     {
-        if ( options->isInlineConfig && !( config = xmlReadMemory( options->gameConfig, strlen( options->gameConfig ), NULL, NULL, 0 ) ) )
-            return E_GAMERUNTIME_GAMECONFIG_BAD_FORMAT;
-        else if ( !( config = xmlReadFile( options->gameConfig, NULL, 0 ) ) )
-            return E_GAMERUNTIME_GAMECONFIG_BAD_FORMAT; 
-        else 
+        if (!options->gameConfig) return E_INVALIDARG;
+        if (options->isInlineConfig)
         {
-            hr = E_GAMERUNTIME_GAMECONFIG_BAD_FORMAT;
-            goto _CLEANUP;
+            SIZE_T length = strlen(options->gameConfig);
+            if (length > INT_MAX) return E_GAMERUNTIME_GAMECONFIG_BAD_FORMAT;
+            config = xmlReadMemory(options->gameConfig, length, nullptr, nullptr, XML_PARSE_NONET);
         }
-    } 
-    else 
-    {
-        if ( !GetModuleFileNameA( NULL, filename, MAX_PATH ) ) return HRESULT_FROM_WIN32( GetLastError() );
-        while ( ( last = strrchr( filename, '\\' ) ) )
-        {
-            *( last + 1 ) = 0;
-            if ( strlen( filename ) + strlen( "MicrosoftGame.config" ) < MAX_PATH )
-                strcat( filename, "MicrosoftGame.config" );
-            else return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
-            if ( PathFileExistsA( filename ) ) break;
-            *last = 0;
-            if (!strrchr( filename, '\\' )) return E_GAME_MISSING_GAME_CONFIG;
-        }
-        if ( !( config = xmlReadFile( filename, NULL, 0 ) ) ) return E_GAMERUNTIME_GAMECONFIG_BAD_FORMAT;
+        else config = xmlReadFile(options->gameConfig, nullptr, XML_PARSE_NONET);
     }
-
-    if ( !( root = xmlDocGetRootElement( config ) ) ) 
+    else
+    {
+        DWORD length = GetModuleFileNameA(nullptr, filename, ARRAY_SIZE(filename));
+        if (!length) return HRESULT_FROM_WIN32(GetLastError());
+        if (length >= ARRAY_SIZE(filename)) return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
+        for (;;)
+        {
+            if (!(last = strrchr(filename, '\\'))) return E_GAME_MISSING_GAME_CONFIG;
+            last[1] = 0;
+            if (strlen(filename) + strlen("MicrosoftGame.config") >= ARRAY_SIZE(filename))
+                return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
+            strcat(filename, "MicrosoftGame.config");
+            if (PathFileExistsA(filename)) break;
+            *last = 0;
+        }
+        config = xmlReadFile(filename, nullptr, XML_PARSE_NONET);
+    }
+    if (!config) return E_GAMERUNTIME_GAMECONFIG_BAD_FORMAT;
+    root = xmlDocGetRootElement(config);
+    if (!root || xmlStrcmp(root->name, BAD_CAST "Game"))
     {
         hr = E_GAMERUNTIME_GAMECONFIG_BAD_FORMAT;
-        goto _CLEANUP;
+        goto cleanup;
     }
-
-    if ( !strcmp( (LPSTR)root->name, "Game" ) )
+    for (child = root->children; child; child = child->next)
     {
-        for ( child = root->children; child; child = child->next )
-            if ( child->type == XML_ELEMENT_NODE )
-            {
-                if ( !strcmp( (LPSTR)child->name, "MSAAppId" ) )
-                    msaAppId = (LPSTR)xmlNodeGetContent( child );
-                else if ( !strcmp( (LPSTR)child->name, "TitleId" ) )
-                {
-                    LPSTR value = (LPSTR)xmlNodeGetContent( child );
-                    titleId = strtoul( value, NULL, 10 );
-                    free( value );
-                }
-                else if ( !strcmp( (LPSTR)child->name, "MSAFullTrust" ) )
-                {
-                    LPSTR value = (LPSTR)xmlNodeGetContent( child );
-                    fullTrust = !strcmp( value, "true" );
-                    free( value );
-                }
-            }
+        if (child->type != XML_ELEMENT_NODE) continue;
+        if (!xmlStrcmp(child->name, BAD_CAST "MSAAppId"))
+        {
+            xmlChar *value = xmlNodeGetContent(child);
+            if (!value) { hr = E_OUTOFMEMORY; goto cleanup; }
+            free(app_id);
+            app_id = strdup(reinterpret_cast<char *>(value));
+            xmlFree(value);
+            if (!app_id) { hr = E_OUTOFMEMORY; goto cleanup; }
+        }
+        else if (!xmlStrcmp(child->name, BAD_CAST "TitleId"))
+        {
+            xmlChar *value = xmlNodeGetContent(child);
+            char *end;
+            unsigned long id;
+            if (!value) { hr = E_OUTOFMEMORY; goto cleanup; }
+            errno = 0;
+            id = strtoul(reinterpret_cast<char *>(value), &end, 16);
+            if (errno || xmlStrlen(value) != 8 ||
+                strspn(reinterpret_cast<char *>(value), "0123456789abcdefABCDEF") != 8 || *end) hr = E_GAMERUNTIME_GAMECONFIG_BAD_FORMAT;
+            parsed_title_id = id;
+            xmlFree(value);
+            if (FAILED(hr)) goto cleanup;
+        }
+        else if (!xmlStrcmp(child->name, BAD_CAST "MSAFullTrust"))
+        {
+            xmlChar *value = xmlNodeGetContent(child);
+            if (!value) { hr = E_OUTOFMEMORY; goto cleanup; }
+            parsed_full_trust = !xmlStrcmp(value, BAD_CAST "true");
+            xmlFree(value);
+        }
     }
-
-_CLEANUP:
-    xmlFreeDoc( config );
+    free(msaAppId);
+    msaAppId = app_id;
+    app_id = nullptr;
+    titleId = parsed_title_id;
+    fullTrust = parsed_full_trust;
+cleanup:
+    free(app_id);
+    xmlFreeDoc(config);
     return hr;
 }
 
-HRESULT WINAPI
-InitializeGDKComponent( INITIALIZE_OPTIONS *options )
+HRESULT WINAPI InitializeGDKComponent(INITIALIZE_OPTIONS *options)
 {
     HRESULT hr = S_OK;
-    TRACE( "options %p.\n", options );
 
-    if ( initializeCalled )
-        return S_OK;
-
-    initializeCalled = TRUE;
+    AcquireSRWLockExclusive(&initialize_lock);
+    if (initializeCalled) goto done;
+    if (FAILED(hr = ObtainMsaAppId(options))) goto done;
 #if XODUS_INTEROP
     hr = InitializeXodusService();
-    if ( FAILED( hr ) ) return hr;
+    xodusAvailable = SUCCEEDED(hr);
+    if (FAILED(hr)) WARN("Xodus is unavailable, using the default user provider (hr %#lx).\n", hr);
 #endif
-    hr = ObtainMsaAppId( options );
-    if ( FAILED( hr ) ) return hr;
-    TRACE("got msaAppId %s\n", debugstr_a(msaAppId));
-
+    initializeCalled = TRUE;
+    hr = S_OK;
+done:
+    ReleaseSRWLockExclusive(&initialize_lock);
     return hr;
 }
