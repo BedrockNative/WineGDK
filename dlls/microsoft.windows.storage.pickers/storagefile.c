@@ -378,6 +378,16 @@ static HRESULT storage_file_create( const WCHAR *path, struct storage_file **out
     return S_OK;
 }
 
+HRESULT storage_file_create_object( const WCHAR *path, IUnknown **out )
+{
+    struct storage_file *file;
+    HRESULT hr;
+
+    if (FAILED(hr = storage_file_create( path, &file ))) return hr;
+    *out = (IUnknown *)&file->IStorageFile_iface;
+    return S_OK;
+}
+
 /*
  * IStorageFileStatics factory
  */

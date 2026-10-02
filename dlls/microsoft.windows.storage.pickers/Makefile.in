@@ -13,4 +13,5 @@ SOURCES = \
 	picker.c \
 	storagefile.c \
 	unixlib.c \
+	uwpsave.c \
 	vector.c

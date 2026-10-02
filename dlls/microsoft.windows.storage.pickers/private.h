@@ -61,6 +61,10 @@ extern IActivationFactory *folder_picker_factory;
 
 /* storagefile.c */
 extern IActivationFactory *storage_file_factory;
+HRESULT storage_file_create_object( const WCHAR *path, IUnknown **out );
+
+/* uwpsave.c */
+extern IActivationFactory *uwp_save_picker_factory;
 
 /* dialog.c */
 enum picker_kind
