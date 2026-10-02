@@ -208,7 +208,12 @@ private:
 
         /* Construct a new IPC Packet */
         requestPacket = new XodusIPCPacket( MagicHeaderType::XML, messageType, requestMessage );
-        xodus_ipclayer->SendRequestAsync( requestPacket, &asyncop );
+        if (FAILED(hr = xodus_ipclayer->SendRequestAsync( requestPacket, &asyncop )) || !asyncop)
+        {
+            if (SUCCEEDED(hr)) hr = E_FAIL;
+            goto cleanup;
+        }
+
         if (AsyncOperationCompletedHandler<IXodusIPCPacket *>::await_AsyncOperation( asyncop, INFINITE ))
         {
             hr = E_FAIL;
@@ -216,6 +221,13 @@ private:
         }
 
         if (FAILED(hr = asyncop->GetResults( &responsePacket ))) goto cleanup;
+        /* OrionBE: a timed out request completes with S_OK and a NULL packet — don't dereference it. */
+        if (!responsePacket)
+        {
+            WARN( "Xodus MSA token request returned no response (timed out?).\n" );
+            hr = HRESULT_FROM_NT( STATUS_TIMEOUT );
+            goto cleanup;
+        }
         responsePacket->get_MessageType( &messageType );
         if (messageType != 4 /* MSA_TOKEN_RESPONSE */)
         {

@@ -98,7 +98,8 @@
 
 #define POLL_BUFFER_SIZE 0x10008 /* UINT16 payload plus IPC header */
 #define XODUS_SOCKET_SUFFIX "xodus.sock"
-#define IPC_REQUEST_TIMEOUT_MS 5000
+/* OrionBE: 5 s was shorter than a slow DNS lookup (login.live.com) and made the game crash; allow up to 60 s. */
+#define IPC_REQUEST_TIMEOUT_MS 60000
 #define XODUS_INTEROP 1
 
 extern BOOLEAN initializeCalled;
