@@ -30,11 +30,15 @@
 
 #include "activation.h"
 
+
 #include "wine/debug.h"
 
 #define WIDL_using_Windows_Foundation
 #define WIDL_using_Windows_Foundation_Collections
 #include "windows.foundation.h"
+#include "corewindow.h"
+#define WIDL_using_Windows_UI_Core
+#include "windows.ui.core.h"
 #define WIDL_using_Windows_Globalization
 #include "windows.globalization.h"
 #define WIDL_using_Windows_UI_Text_Core

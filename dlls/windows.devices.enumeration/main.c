@@ -120,6 +120,8 @@ struct device_watcher
     struct weak_reference_source weak_reference_source;
 
     struct list added_handlers;
+    struct list updated_handlers;
+    struct list removed_handlers;
     struct list enumerated_handlers;
     struct list stopped_handlers;
     IUnknown *query_params;
@@ -179,6 +181,8 @@ static ULONG WINAPI device_watcher_Release( IDeviceWatcher *iface )
     if (!ref)
     {
         typed_event_handlers_clear( &impl->added_handlers );
+        typed_event_handlers_clear( &impl->updated_handlers );
+        typed_event_handlers_clear( &impl->removed_handlers );
         typed_event_handlers_clear( &impl->enumerated_handlers );
         typed_event_handlers_clear( &impl->stopped_handlers );
         IUnknown_Release( impl->query_params );
@@ -227,27 +231,29 @@ static HRESULT WINAPI device_watcher_remove_Added( IDeviceWatcher *iface, EventR
 static HRESULT WINAPI device_watcher_add_Updated( IDeviceWatcher *iface, ITypedEventHandler_DeviceWatcher_DeviceInformationUpdate *handler,
                                                   EventRegistrationToken *token )
 {
-    FIXME( "iface %p, handler %p, token %p stub!\n", iface, handler, token );
-    return S_OK;
+    struct device_watcher *impl = impl_from_IDeviceWatcher( iface );
+    if (!handler || !token) return E_POINTER;
+    return typed_event_handlers_append( &impl->updated_handlers, (ITypedEventHandler_IInspectable_IInspectable *)handler, token );
 }
 
 static HRESULT WINAPI device_watcher_remove_Updated( IDeviceWatcher *iface, EventRegistrationToken token )
 {
-    FIXME( "iface %p, token %#I64x stub!\n", iface, token.value );
-    return E_NOTIMPL;
+    struct device_watcher *impl = impl_from_IDeviceWatcher( iface );
+    return typed_event_handlers_remove( &impl->updated_handlers, &token );
 }
 
 static HRESULT WINAPI device_watcher_add_Removed( IDeviceWatcher *iface, ITypedEventHandler_DeviceWatcher_DeviceInformationUpdate *handler,
                                                   EventRegistrationToken *token )
 {
-    FIXME( "iface %p, handler %p, token %p stub!\n", iface, handler, token );
-    return E_NOTIMPL;
+    struct device_watcher *impl = impl_from_IDeviceWatcher( iface );
+    if (!handler || !token) return E_POINTER;
+    return typed_event_handlers_append( &impl->removed_handlers, (ITypedEventHandler_IInspectable_IInspectable *)handler, token );
 }
 
 static HRESULT WINAPI device_watcher_remove_Removed( IDeviceWatcher *iface, EventRegistrationToken token )
 {
-    FIXME( "iface %p, token %#I64x stub!\n", iface, token.value );
-    return E_NOTIMPL;
+    struct device_watcher *impl = impl_from_IDeviceWatcher( iface );
+    return typed_event_handlers_remove( &impl->removed_handlers, &token );
 }
 
 static HRESULT WINAPI device_watcher_add_EnumerationCompleted( IDeviceWatcher *iface, ITypedEventHandler_DeviceWatcher_IInspectable *handler,
@@ -361,6 +367,16 @@ static void WINAPI device_object_query_callback( HDEVQUERY query, void *data,
         IDeviceInformation_Release( info );
         break;
     }
+    case DevQueryResultUpdate:
+    case DevQueryResultRemove:
+    {
+        IDeviceInformationUpdate *update;
+        if (FAILED(hr = device_information_update_create( &action_data->Data.DeviceObject, &update ))) break;
+        typed_event_handlers_notify( action_data->Action == DevQueryResultUpdate ? &watcher->updated_handlers :
+                                     &watcher->removed_handlers, (IInspectable *)iface, (IInspectable *)update );
+        IDeviceInformationUpdate_Release( update );
+        break;
+    }
     default:
         FIXME( "Unhandled DEV_QUERY_RESULT_ACTION value: %d\n", action_data->Action );
         break;
@@ -393,7 +409,6 @@ static HRESULT WINAPI device_watcher_Start( IDeviceWatcher *iface )
         const DEVPROP_FILTER_EXPRESSION *filters = NULL;
         ULONG filters_len = 0;
         IWeakReference *weak;
-        HRESULT hr;
 
         if (query_params->expr)
         {
@@ -594,6 +609,8 @@ static HRESULT device_watcher_create( HSTRING filter, IIterable_HSTRING *additio
     if (FAILED(hr = devquery_params_create( type, expr, prop_keys, prop_keys_len, &impl->query_params ))) goto failed;
 
     list_init( &impl->added_handlers );
+    list_init( &impl->updated_handlers );
+    list_init( &impl->removed_handlers );
     list_init( &impl->enumerated_handlers );
     list_init( &impl->stopped_handlers );
 
@@ -787,11 +804,39 @@ static HRESULT WINAPI device_statics_FindAllAsync( IDeviceInformationStatics *if
     return IDeviceInformationStatics_FindAllAsyncAqsFilterAndAdditionalProperties( iface, NULL, NULL, op );
 }
 
+/* Audio endpoints use the same interface queries as MediaDevice selectors. */
+static HRESULT device_class_filter( DeviceClass class, HSTRING *filter )
+{
+    const WCHAR *query;
+    *filter = NULL;
+    switch (class)
+    {
+    case DeviceClass_All: return S_OK;
+    case DeviceClass_AudioCapture:
+        query = L"System.Devices.InterfaceClassGuid:=\"{2eef81be-33fa-4800-9670-1cd474972c3f}\"";
+        break;
+    case DeviceClass_AudioRender:
+        query = L"System.Devices.InterfaceClassGuid:=\"{e6327cad-dcec-4949-ae8a-991e976a79d2}\"";
+        break;
+    default:
+        if (class < DeviceClass_All || class > DeviceClass_Location) return E_INVALIDARG;
+        FIXME( "Device class %u is not supported.\n", class );
+        return E_NOTIMPL;
+    }
+    return WindowsCreateString( query, wcslen(query), filter );
+}
+
 static HRESULT WINAPI device_statics_FindAllAsyncDeviceClass( IDeviceInformationStatics *iface, DeviceClass class,
                                                               IAsyncOperation_DeviceInformationCollection **op )
 {
-    FIXME( "iface %p, class %d, op %p stub!\n", iface, class, op );
-    return E_NOTIMPL;
+    HSTRING filter;
+    HRESULT hr;
+    if (!op) return E_POINTER;
+    *op = NULL;
+    if (FAILED(hr = device_class_filter( class, &filter ))) return hr;
+    hr = IDeviceInformationStatics_FindAllAsyncAqsFilterAndAdditionalProperties( iface, filter, NULL, op );
+    WindowsDeleteString( filter );
+    return hr;
 }
 
 static HRESULT WINAPI device_statics_FindAllAsyncAqsFilter( IDeviceInformationStatics *iface, HSTRING filter,
@@ -841,8 +886,14 @@ static HRESULT WINAPI device_statics_CreateWatcher( IDeviceInformationStatics *i
 
 static HRESULT WINAPI device_statics_CreateWatcherDeviceClass( IDeviceInformationStatics *iface, DeviceClass class, IDeviceWatcher **watcher )
 {
-    FIXME( "iface %p, class %d, watcher %p stub!\n", iface, class, watcher );
-    return E_NOTIMPL;
+    HSTRING filter;
+    HRESULT hr;
+    if (!watcher) return E_POINTER;
+    *watcher = NULL;
+    if (FAILED(hr = device_class_filter( class, &filter ))) return hr;
+    hr = device_watcher_create( filter, NULL, DeviceInformationKind_DeviceInterface, watcher );
+    WindowsDeleteString( filter );
+    return hr;
 }
 
 static HRESULT WINAPI device_statics_CreateWatcherAqsFilter( IDeviceInformationStatics *iface, HSTRING filter, IDeviceWatcher **watcher )
@@ -1019,6 +1070,9 @@ HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **fa
                 &IID_IActivationFactory, (void **)factory );
     else if (!wcscmp( buffer, RuntimeClass_Windows_Devices_Enumeration_DeviceAccessInformation ))
         IActivationFactory_QueryInterface( device_access_factory, &IID_IActivationFactory, (void **)factory );
+
+    else if (!wcscmp( buffer, RuntimeClass_Windows_Devices_Enumeration_Pnp_PnpObject ))
+        IActivationFactory_QueryInterface( pnp_factory, &IID_IActivationFactory, (void **)factory );
 
     if (*factory) return S_OK;
     return CLASS_E_CLASSNOTAVAILABLE;

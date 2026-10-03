@@ -16,6 +16,9 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include "initguid.h"
+#include "private.h"
+#include "robuffer.h"
 #include <windef.h>
 #include <winnt.h>
 #include <winstring.h>
@@ -31,7 +34,10 @@ HRESULT WINAPI SetSocketMediaStreamingMode(BOOL value)
 
 HRESULT WINAPI DllGetActivationFactory(HSTRING classid, void **factory)
 {
-    FIXME("class %s, factory %p.\n", debugstr_hstring(classid), factory);
+    TRACE("class %s, factory %p.\n", debugstr_hstring(classid), factory);
+
+    if (!wcscmp(WindowsGetStringRawBuffer(classid, NULL), RuntimeClass_Windows_Networking_Sockets_MessageWebSocket))
+        return IActivationFactory_QueryInterface(message_websocket_factory, &IID_IActivationFactory, factory);
 
     *factory = NULL;
 

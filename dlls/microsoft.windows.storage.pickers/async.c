@@ -20,10 +20,14 @@
 
 #define WIDL_using_Wine_Internal
 #include "private.h"
+#define WIDL_using_Windows_Storage
+#define WIDL_using_Windows_Storage_Provider
+#include "windows.storage.h"
 #include "initguid.h"
 #include "async_private.h"
 
 #include "wine/debug.h"
+#include "roapi.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(pickers);
 
@@ -170,6 +174,7 @@ static HRESULT WINAPI async_impl_get_Result( IAsyncInfoImpl *iface, PROPVARIANT 
         PropVariantCopy( result, &impl->result );
         hr = impl->hr;
     }
+    else if (impl->status == Canceled) hr = E_ABORT;
     LeaveCriticalSection( &impl->cs );
 
     return hr;
@@ -185,7 +190,7 @@ static BOOL async_info_complete( struct async_info *impl, BOOL called_async )
     if (!called_async && hr == STATUS_PENDING) return FALSE;
 
     EnterCriticalSection( &impl->cs );
-    if (impl->status != Closed) impl->status = FAILED(hr) ? Error : Completed;
+    if (impl->status != Closed && impl->status != Canceled) impl->status = FAILED(hr) ? Error : Completed;
     PropVariantCopy( &impl->result, &result );
     impl->hr = hr;
 
@@ -285,14 +290,18 @@ static HRESULT WINAPI async_info_Cancel( IAsyncInfo *iface )
 {
     struct async_info *impl = impl_from_IAsyncInfo( iface );
     HRESULT hr = S_OK;
+    IClosable *closable;
+    BOOL cancel = FALSE;
 
     TRACE( "iface %p.\n", iface );
 
     EnterCriticalSection( &impl->cs );
     if (impl->status == Closed) hr = E_ILLEGAL_METHOD_CALL;
-    else if (impl->status == Started) impl->status = Canceled;
+    else if (impl->status == Started) { impl->status = Canceled; cancel = TRUE; }
     LeaveCriticalSection( &impl->cs );
 
+    if (cancel && impl->param && SUCCEEDED(IUnknown_QueryInterface(impl->param, &IID_IClosable, (void **)&closable)))
+    { IClosable_Close(closable); IClosable_Release(closable); }
     return hr;
 }
 
@@ -339,7 +348,9 @@ static void CALLBACK async_info_callback( TP_CALLBACK_INSTANCE *instance, void *
 {
     struct async_info *impl = impl_from_IAsyncInfoImpl( iface );
 
+    HRESULT hr = RoInitialize(RO_INIT_MULTITHREADED);
     async_info_complete( impl, TRUE );
+    if (SUCCEEDED(hr)) RoUninitialize();
 }
 
 static HRESULT async_info_create( IUnknown *invoker, IUnknown *param, async_operation_callback callback,
@@ -473,6 +484,8 @@ static HRESULT WINAPI async_inspectable_GetResults( IAsyncOperation_IInspectable
 
     TRACE( "iface %p, results %p.\n", iface, results );
 
+    if (!results) return E_POINTER;
+    *results = NULL;
     if (SUCCEEDED(hr = IAsyncInfoImpl_get_Result( impl->IAsyncInfoImpl_inner, &result )))
     {
         if ((*results = (IInspectable *)result.punkVal)) IInspectable_AddRef( *results );
@@ -643,7 +656,7 @@ static const struct IAsyncActionVtbl async_action_vtbl =
     async_action_GetResults,
 };
 
-HRESULT async_action_create( IUnknown *invoker, async_operation_callback callback, IAsyncAction **out )
+HRESULT async_action_create( IUnknown *invoker, IUnknown *param, async_operation_callback callback, IAsyncAction **out )
 {
     struct async_action *impl;
     HRESULT hr;
@@ -653,7 +666,7 @@ HRESULT async_action_create( IUnknown *invoker, async_operation_callback callbac
     impl->IAsyncAction_iface.lpVtbl = &async_action_vtbl;
     impl->ref = 1;
 
-    if (FAILED(hr = async_info_create( invoker, NULL, callback, (IInspectable *)&impl->IAsyncAction_iface, &impl->IAsyncInfoImpl_inner )) ||
+    if (FAILED(hr = async_info_create( invoker, param, callback, (IInspectable *)&impl->IAsyncAction_iface, &impl->IAsyncInfoImpl_inner )) ||
         FAILED(hr = IAsyncInfoImpl_Start( impl->IAsyncInfoImpl_inner )))
     {
         if (impl->IAsyncInfoImpl_inner) IAsyncInfoImpl_Release( impl->IAsyncInfoImpl_inner );
@@ -663,5 +676,665 @@ HRESULT async_action_create( IUnknown *invoker, async_operation_callback callbac
 
     *out = &impl->IAsyncAction_iface;
     TRACE( "created IAsyncAction %p\n", *out );
+    return S_OK;
+}
+
+struct async_buffer_read
+{
+    IAsyncOperationWithProgress_IBuffer_UINT32 IAsyncOperationWithProgress_IBuffer_UINT32_iface;
+    IAsyncInfoImpl *IAsyncInfoImpl_inner;
+    LONG ref;
+    const GUID *iid;
+    IAsyncOperationProgressHandler_IBuffer_UINT32 *progress;
+    SRWLOCK lock;
+};
+
+static inline struct async_buffer_read *impl_from_IAsyncOperationWithProgress_IBuffer_UINT32( IAsyncOperationWithProgress_IBuffer_UINT32 *iface )
+{
+    return CONTAINING_RECORD( iface, struct async_buffer_read, IAsyncOperationWithProgress_IBuffer_UINT32_iface );
+}
+
+static HRESULT WINAPI async_buffer_read_QueryInterface( IAsyncOperationWithProgress_IBuffer_UINT32 *iface, REFIID iid, void **out )
+{
+    struct async_buffer_read *impl = impl_from_IAsyncOperationWithProgress_IBuffer_UINT32( iface );
+
+    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
+
+    if (IsEqualGUID( iid, &IID_IUnknown ) ||
+        IsEqualGUID( iid, &IID_IInspectable ) ||
+        IsEqualGUID( iid, &IID_IAgileObject ) ||
+        IsEqualGUID( iid, impl->iid ))
+    {
+        IInspectable_AddRef( (*out = &impl->IAsyncOperationWithProgress_IBuffer_UINT32_iface) );
+        return S_OK;
+    }
+
+    return IAsyncInfoImpl_QueryInterface( impl->IAsyncInfoImpl_inner, iid, out );
+}
+
+static ULONG WINAPI async_buffer_read_AddRef( IAsyncOperationWithProgress_IBuffer_UINT32 *iface )
+{
+    struct async_buffer_read *impl = impl_from_IAsyncOperationWithProgress_IBuffer_UINT32( iface );
+    ULONG ref = InterlockedIncrement( &impl->ref );
+    TRACE( "iface %p, ref %lu.\n", iface, ref );
+    return ref;
+}
+
+static ULONG WINAPI async_buffer_read_Release( IAsyncOperationWithProgress_IBuffer_UINT32 *iface )
+{
+    struct async_buffer_read *impl = impl_from_IAsyncOperationWithProgress_IBuffer_UINT32( iface );
+    ULONG ref = InterlockedDecrement( &impl->ref );
+    TRACE( "iface %p, ref %lu.\n", iface, ref );
+
+    if (!ref)
+    {
+        /* guard against re-entry if inner releases an outer iface */
+        InterlockedIncrement( &impl->ref );
+        IAsyncInfoImpl_Release( impl->IAsyncInfoImpl_inner );
+        if (impl->progress) IAsyncOperationProgressHandler_IBuffer_UINT32_Release(impl->progress);
+        free( impl );
+    }
+
+    return ref;
+}
+
+static HRESULT WINAPI async_buffer_read_GetIids( IAsyncOperationWithProgress_IBuffer_UINT32 *iface, ULONG *iid_count, IID **iids )
+{
+    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI async_buffer_read_GetRuntimeClassName( IAsyncOperationWithProgress_IBuffer_UINT32 *iface, HSTRING *class_name )
+{
+    return WindowsCreateString( L"Windows.Foundation.IAsyncOperation`1<IInspectable>",
+                                ARRAY_SIZE(L"Windows.Foundation.IAsyncOperation`1<IInspectable>"),
+                                class_name );
+}
+
+static HRESULT WINAPI async_buffer_read_GetTrustLevel( IAsyncOperationWithProgress_IBuffer_UINT32 *iface, TrustLevel *trust_level )
+{
+    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI async_buffer_read_put_Completed( IAsyncOperationWithProgress_IBuffer_UINT32 *iface, IAsyncOperationWithProgressCompletedHandler_IBuffer_UINT32 *bool_handler )
+{
+    IAsyncOperationCompletedHandlerImpl *handler = (IAsyncOperationCompletedHandlerImpl *)bool_handler;
+    struct async_buffer_read *impl = impl_from_IAsyncOperationWithProgress_IBuffer_UINT32( iface );
+    TRACE( "iface %p, handler %p.\n", iface, handler );
+    return IAsyncInfoImpl_put_Completed( impl->IAsyncInfoImpl_inner, handler );
+}
+
+static HRESULT WINAPI async_buffer_read_get_Completed( IAsyncOperationWithProgress_IBuffer_UINT32 *iface, IAsyncOperationWithProgressCompletedHandler_IBuffer_UINT32 **bool_handler )
+{
+    IAsyncOperationCompletedHandlerImpl **handler = (IAsyncOperationCompletedHandlerImpl **)bool_handler;
+    struct async_buffer_read *impl = impl_from_IAsyncOperationWithProgress_IBuffer_UINT32( iface );
+    TRACE( "iface %p, handler %p.\n", iface, handler );
+    return IAsyncInfoImpl_get_Completed( impl->IAsyncInfoImpl_inner, handler );
+}
+
+static HRESULT WINAPI async_buffer_read_GetResults( IAsyncOperationWithProgress_IBuffer_UINT32 *iface, IBuffer **results )
+{
+    struct async_buffer_read *impl = impl_from_IAsyncOperationWithProgress_IBuffer_UINT32( iface );
+    PROPVARIANT result = {.vt = VT_UNKNOWN};
+    HRESULT hr;
+
+    TRACE( "iface %p, results %p.\n", iface, results );
+
+    if (!results) return E_POINTER;
+    *results = NULL;
+    if (SUCCEEDED(hr = IAsyncInfoImpl_get_Result( impl->IAsyncInfoImpl_inner, &result )))
+    {
+        if ((*results = (IBuffer *)result.punkVal)) IBuffer_AddRef( *results );
+        PropVariantClear( &result );
+    }
+
+    return hr;
+}
+
+/* A file read completes in one operation; there are no intermediate progress reports. */
+static HRESULT WINAPI async_buffer_read_put_Progress(IAsyncOperationWithProgress_IBuffer_UINT32 *iface,
+        IAsyncOperationProgressHandler_IBuffer_UINT32 *handler)
+{
+    struct async_buffer_read *impl = impl_from_IAsyncOperationWithProgress_IBuffer_UINT32(iface);
+    IAsyncOperationProgressHandler_IBuffer_UINT32 *old;
+    if (handler) IAsyncOperationProgressHandler_IBuffer_UINT32_AddRef(handler);
+    AcquireSRWLockExclusive(&impl->lock);
+    old = impl->progress;
+    impl->progress = handler;
+    ReleaseSRWLockExclusive(&impl->lock);
+    if (old) IAsyncOperationProgressHandler_IBuffer_UINT32_Release(old);
+    return S_OK;
+}
+static HRESULT WINAPI async_buffer_read_get_Progress(IAsyncOperationWithProgress_IBuffer_UINT32 *iface,
+        IAsyncOperationProgressHandler_IBuffer_UINT32 **handler)
+{
+    struct async_buffer_read *impl = impl_from_IAsyncOperationWithProgress_IBuffer_UINT32(iface);
+    if (!handler) return E_POINTER;
+    AcquireSRWLockShared(&impl->lock);
+    if ((*handler = impl->progress)) IAsyncOperationProgressHandler_IBuffer_UINT32_AddRef(*handler);
+    ReleaseSRWLockShared(&impl->lock);
+    return S_OK;
+}
+
+static const struct IAsyncOperationWithProgress_IBuffer_UINT32Vtbl async_buffer_read_vtbl =
+{
+    /* IUnknown methods */
+    async_buffer_read_QueryInterface,
+    async_buffer_read_AddRef,
+    async_buffer_read_Release,
+    /* IInspectable methods */
+    async_buffer_read_GetIids,
+    async_buffer_read_GetRuntimeClassName,
+    async_buffer_read_GetTrustLevel,
+    /* IAsyncOperation<IInspectable> */
+    async_buffer_read_put_Progress,
+    async_buffer_read_get_Progress,
+    async_buffer_read_put_Completed,
+    async_buffer_read_get_Completed,
+    async_buffer_read_GetResults,
+};
+
+HRESULT async_operation_buffer_read_create( IUnknown *invoker, IUnknown *param, async_operation_callback callback,
+                                            IAsyncOperationWithProgress_IBuffer_UINT32 **out )
+{
+    struct async_buffer_read *impl;
+    HRESULT hr;
+
+    *out = NULL;
+    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+    impl->IAsyncOperationWithProgress_IBuffer_UINT32_iface.lpVtbl = &async_buffer_read_vtbl;
+    impl->ref = 1;
+    impl->iid = &IID_IAsyncOperationWithProgress_IBuffer_UINT32;
+
+    if (FAILED(hr = async_info_create( invoker, param, callback, (IInspectable *)&impl->IAsyncOperationWithProgress_IBuffer_UINT32_iface, &impl->IAsyncInfoImpl_inner )) ||
+        FAILED(hr = IAsyncInfoImpl_Start( impl->IAsyncInfoImpl_inner )))
+    {
+        if (impl->IAsyncInfoImpl_inner) IAsyncInfoImpl_Release( impl->IAsyncInfoImpl_inner );
+        free( impl );
+        return hr;
+    }
+
+    *out = &impl->IAsyncOperationWithProgress_IBuffer_UINT32_iface;
+    TRACE( "created IAsyncOperationWithProgress_IBuffer_UINT32 %p\n", *out );
+    return S_OK;
+}
+
+struct async_file_update
+{
+    IAsyncOperation_FileUpdateStatus IAsyncOperation_FileUpdateStatus_iface;
+    IAsyncInfoImpl *IAsyncInfoImpl_inner;
+    LONG ref;
+    const GUID *iid;
+};
+
+static inline struct async_file_update *impl_from_IAsyncOperation_FileUpdateStatus( IAsyncOperation_FileUpdateStatus *iface )
+{
+    return CONTAINING_RECORD( iface, struct async_file_update, IAsyncOperation_FileUpdateStatus_iface );
+}
+
+static HRESULT WINAPI async_file_update_QueryInterface( IAsyncOperation_FileUpdateStatus *iface, REFIID iid, void **out )
+{
+    struct async_file_update *impl = impl_from_IAsyncOperation_FileUpdateStatus( iface );
+
+    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
+
+    if (IsEqualGUID( iid, &IID_IUnknown ) ||
+        IsEqualGUID( iid, &IID_IInspectable ) ||
+        IsEqualGUID( iid, &IID_IAgileObject ) ||
+        IsEqualGUID( iid, impl->iid ))
+    {
+        IInspectable_AddRef( (*out = &impl->IAsyncOperation_FileUpdateStatus_iface) );
+        return S_OK;
+    }
+
+    return IAsyncInfoImpl_QueryInterface( impl->IAsyncInfoImpl_inner, iid, out );
+}
+
+static ULONG WINAPI async_file_update_AddRef( IAsyncOperation_FileUpdateStatus *iface )
+{
+    struct async_file_update *impl = impl_from_IAsyncOperation_FileUpdateStatus( iface );
+    ULONG ref = InterlockedIncrement( &impl->ref );
+    TRACE( "iface %p, ref %lu.\n", iface, ref );
+    return ref;
+}
+
+static ULONG WINAPI async_file_update_Release( IAsyncOperation_FileUpdateStatus *iface )
+{
+    struct async_file_update *impl = impl_from_IAsyncOperation_FileUpdateStatus( iface );
+    ULONG ref = InterlockedDecrement( &impl->ref );
+    TRACE( "iface %p, ref %lu.\n", iface, ref );
+
+    if (!ref)
+    {
+        /* guard against re-entry if inner releases an outer iface */
+        InterlockedIncrement( &impl->ref );
+        IAsyncInfoImpl_Release( impl->IAsyncInfoImpl_inner );
+        free( impl );
+    }
+
+    return ref;
+}
+
+static HRESULT WINAPI async_file_update_GetIids( IAsyncOperation_FileUpdateStatus *iface, ULONG *iid_count, IID **iids )
+{
+    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI async_file_update_GetRuntimeClassName( IAsyncOperation_FileUpdateStatus *iface, HSTRING *class_name )
+{
+    return WindowsCreateString( L"Windows.Foundation.IAsyncOperation`1<Windows.Storage.Provider.FileUpdateStatus>",
+                                ARRAY_SIZE(L"Windows.Foundation.IAsyncOperation`1<Windows.Storage.Provider.FileUpdateStatus>"),
+                                class_name );
+}
+
+static HRESULT WINAPI async_file_update_GetTrustLevel( IAsyncOperation_FileUpdateStatus *iface, TrustLevel *trust_level )
+{
+    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI async_file_update_put_Completed( IAsyncOperation_FileUpdateStatus *iface, IAsyncOperationCompletedHandler_FileUpdateStatus *bool_handler )
+{
+    IAsyncOperationCompletedHandlerImpl *handler = (IAsyncOperationCompletedHandlerImpl *)bool_handler;
+    struct async_file_update *impl = impl_from_IAsyncOperation_FileUpdateStatus( iface );
+    TRACE( "iface %p, handler %p.\n", iface, handler );
+    return IAsyncInfoImpl_put_Completed( impl->IAsyncInfoImpl_inner, handler );
+}
+
+static HRESULT WINAPI async_file_update_get_Completed( IAsyncOperation_FileUpdateStatus *iface, IAsyncOperationCompletedHandler_FileUpdateStatus **bool_handler )
+{
+    IAsyncOperationCompletedHandlerImpl **handler = (IAsyncOperationCompletedHandlerImpl **)bool_handler;
+    struct async_file_update *impl = impl_from_IAsyncOperation_FileUpdateStatus( iface );
+    TRACE( "iface %p, handler %p.\n", iface, handler );
+    return IAsyncInfoImpl_get_Completed( impl->IAsyncInfoImpl_inner, handler );
+}
+
+static HRESULT WINAPI async_file_update_GetResults( IAsyncOperation_FileUpdateStatus *iface, FileUpdateStatus *results )
+{
+    struct async_file_update *impl = impl_from_IAsyncOperation_FileUpdateStatus( iface );
+    PROPVARIANT result = {.vt = VT_I4};
+    HRESULT hr;
+
+    TRACE( "iface %p, results %p.\n", iface, results );
+
+    if (!results) return E_POINTER;
+    *results = FileUpdateStatus_Incomplete;
+    if (SUCCEEDED(hr = IAsyncInfoImpl_get_Result( impl->IAsyncInfoImpl_inner, &result )))
+    {
+        *results = result.lVal;
+        PropVariantClear( &result );
+    }
+
+    return hr;
+}
+
+static const struct IAsyncOperation_FileUpdateStatusVtbl async_file_update_vtbl =
+{
+    /* IUnknown methods */
+    async_file_update_QueryInterface,
+    async_file_update_AddRef,
+    async_file_update_Release,
+    /* IInspectable methods */
+    async_file_update_GetIids,
+    async_file_update_GetRuntimeClassName,
+    async_file_update_GetTrustLevel,
+    /* IAsyncOperation<IInspectable> */
+    async_file_update_put_Completed,
+    async_file_update_get_Completed,
+    async_file_update_GetResults,
+};
+
+HRESULT async_operation_file_update_create( IUnknown *invoker, async_operation_callback callback,
+                                            IAsyncOperation_FileUpdateStatus **out )
+{
+    struct async_file_update *impl;
+    HRESULT hr;
+
+    *out = NULL;
+    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+    impl->IAsyncOperation_FileUpdateStatus_iface.lpVtbl = &async_file_update_vtbl;
+    impl->ref = 1;
+    impl->iid = &IID_IAsyncOperation_FileUpdateStatus;
+
+    if (FAILED(hr = async_info_create( invoker, NULL, callback, (IInspectable *)&impl->IAsyncOperation_FileUpdateStatus_iface, &impl->IAsyncInfoImpl_inner )) ||
+        FAILED(hr = IAsyncInfoImpl_Start( impl->IAsyncInfoImpl_inner )))
+    {
+        if (impl->IAsyncInfoImpl_inner) IAsyncInfoImpl_Release( impl->IAsyncInfoImpl_inner );
+        free( impl );
+        return hr;
+    }
+
+    *out = &impl->IAsyncOperation_FileUpdateStatus_iface;
+    TRACE( "created IAsyncOperation_FileUpdateStatus %p\n", *out );
+    return S_OK;
+}
+
+struct async_buffer_write
+{
+    IAsyncOperationWithProgress_UINT32_UINT32 IAsyncOperationWithProgress_UINT32_UINT32_iface;
+    IAsyncInfoImpl *IAsyncInfoImpl_inner;
+    LONG ref;
+    const GUID *iid;
+    IAsyncOperationProgressHandler_UINT32_UINT32 *progress;
+    SRWLOCK lock;
+};
+
+static inline struct async_buffer_write *impl_from_IAsyncOperationWithProgress_UINT32_UINT32( IAsyncOperationWithProgress_UINT32_UINT32 *iface )
+{
+    return CONTAINING_RECORD( iface, struct async_buffer_write, IAsyncOperationWithProgress_UINT32_UINT32_iface );
+}
+
+static HRESULT WINAPI async_buffer_write_QueryInterface( IAsyncOperationWithProgress_UINT32_UINT32 *iface, REFIID iid, void **out )
+{
+    struct async_buffer_write *impl = impl_from_IAsyncOperationWithProgress_UINT32_UINT32( iface );
+
+    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
+
+    if (IsEqualGUID( iid, &IID_IUnknown ) ||
+        IsEqualGUID( iid, &IID_IInspectable ) ||
+        IsEqualGUID( iid, &IID_IAgileObject ) ||
+        IsEqualGUID( iid, impl->iid ))
+    {
+        IInspectable_AddRef( (*out = &impl->IAsyncOperationWithProgress_UINT32_UINT32_iface) );
+        return S_OK;
+    }
+
+    return IAsyncInfoImpl_QueryInterface( impl->IAsyncInfoImpl_inner, iid, out );
+}
+
+static ULONG WINAPI async_buffer_write_AddRef( IAsyncOperationWithProgress_UINT32_UINT32 *iface )
+{
+    struct async_buffer_write *impl = impl_from_IAsyncOperationWithProgress_UINT32_UINT32( iface );
+    ULONG ref = InterlockedIncrement( &impl->ref );
+    TRACE( "iface %p, ref %lu.\n", iface, ref );
+    return ref;
+}
+
+static ULONG WINAPI async_buffer_write_Release( IAsyncOperationWithProgress_UINT32_UINT32 *iface )
+{
+    struct async_buffer_write *impl = impl_from_IAsyncOperationWithProgress_UINT32_UINT32( iface );
+    ULONG ref = InterlockedDecrement( &impl->ref );
+    TRACE( "iface %p, ref %lu.\n", iface, ref );
+
+    if (!ref)
+    {
+        /* guard against re-entry if inner releases an outer iface */
+        InterlockedIncrement( &impl->ref );
+        IAsyncInfoImpl_Release( impl->IAsyncInfoImpl_inner );
+        if (impl->progress) IAsyncOperationProgressHandler_UINT32_UINT32_Release(impl->progress);
+        free( impl );
+    }
+
+    return ref;
+}
+
+static HRESULT WINAPI async_buffer_write_GetIids( IAsyncOperationWithProgress_UINT32_UINT32 *iface, ULONG *iid_count, IID **iids )
+{
+    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI async_buffer_write_GetRuntimeClassName( IAsyncOperationWithProgress_UINT32_UINT32 *iface, HSTRING *class_name )
+{
+    return WindowsCreateString( L"Windows.Foundation.IAsyncOperationWithProgress`2<UInt32, UInt32>",
+                                ARRAY_SIZE(L"Windows.Foundation.IAsyncOperationWithProgress`2<UInt32, UInt32>") - 1,
+                                class_name );
+}
+
+static HRESULT WINAPI async_buffer_write_GetTrustLevel( IAsyncOperationWithProgress_UINT32_UINT32 *iface, TrustLevel *trust_level )
+{
+    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI async_buffer_write_put_Completed( IAsyncOperationWithProgress_UINT32_UINT32 *iface, IAsyncOperationWithProgressCompletedHandler_UINT32_UINT32 *bool_handler )
+{
+    IAsyncOperationCompletedHandlerImpl *handler = (IAsyncOperationCompletedHandlerImpl *)bool_handler;
+    struct async_buffer_write *impl = impl_from_IAsyncOperationWithProgress_UINT32_UINT32( iface );
+    TRACE( "iface %p, handler %p.\n", iface, handler );
+    return IAsyncInfoImpl_put_Completed( impl->IAsyncInfoImpl_inner, handler );
+}
+
+static HRESULT WINAPI async_buffer_write_get_Completed( IAsyncOperationWithProgress_UINT32_UINT32 *iface, IAsyncOperationWithProgressCompletedHandler_UINT32_UINT32 **bool_handler )
+{
+    IAsyncOperationCompletedHandlerImpl **handler = (IAsyncOperationCompletedHandlerImpl **)bool_handler;
+    struct async_buffer_write *impl = impl_from_IAsyncOperationWithProgress_UINT32_UINT32( iface );
+    TRACE( "iface %p, handler %p.\n", iface, handler );
+    return IAsyncInfoImpl_get_Completed( impl->IAsyncInfoImpl_inner, handler );
+}
+
+static HRESULT WINAPI async_buffer_write_GetResults( IAsyncOperationWithProgress_UINT32_UINT32 *iface, UINT32 *results )
+{
+    struct async_buffer_write *impl = impl_from_IAsyncOperationWithProgress_UINT32_UINT32( iface );
+    PROPVARIANT result = {.vt = VT_UI4};
+    HRESULT hr;
+
+    TRACE( "iface %p, results %p.\n", iface, results );
+
+    if (!results) return E_POINTER;
+    *results = 0;
+    if (SUCCEEDED(hr = IAsyncInfoImpl_get_Result( impl->IAsyncInfoImpl_inner, &result )))
+    {
+        *results = result.ulVal;
+        PropVariantClear( &result );
+    }
+
+    return hr;
+}
+
+/* A file write completes in one operation; there are no intermediate progress reports. */
+static HRESULT WINAPI async_buffer_write_put_Progress(IAsyncOperationWithProgress_UINT32_UINT32 *iface,
+        IAsyncOperationProgressHandler_UINT32_UINT32 *handler)
+{
+    struct async_buffer_write *impl = impl_from_IAsyncOperationWithProgress_UINT32_UINT32(iface);
+    IAsyncOperationProgressHandler_UINT32_UINT32 *old;
+    if (handler) IAsyncOperationProgressHandler_UINT32_UINT32_AddRef(handler);
+    AcquireSRWLockExclusive(&impl->lock);
+    old = impl->progress;
+    impl->progress = handler;
+    ReleaseSRWLockExclusive(&impl->lock);
+    if (old) IAsyncOperationProgressHandler_UINT32_UINT32_Release(old);
+    return S_OK;
+}
+static HRESULT WINAPI async_buffer_write_get_Progress(IAsyncOperationWithProgress_UINT32_UINT32 *iface,
+        IAsyncOperationProgressHandler_UINT32_UINT32 **handler)
+{
+    struct async_buffer_write *impl = impl_from_IAsyncOperationWithProgress_UINT32_UINT32(iface);
+    if (!handler) return E_POINTER;
+    AcquireSRWLockShared(&impl->lock);
+    if ((*handler = impl->progress)) IAsyncOperationProgressHandler_UINT32_UINT32_AddRef(*handler);
+    ReleaseSRWLockShared(&impl->lock);
+    return S_OK;
+}
+
+static const struct IAsyncOperationWithProgress_UINT32_UINT32Vtbl async_buffer_write_vtbl =
+{
+    /* IUnknown methods */
+    async_buffer_write_QueryInterface,
+    async_buffer_write_AddRef,
+    async_buffer_write_Release,
+    /* IInspectable methods */
+    async_buffer_write_GetIids,
+    async_buffer_write_GetRuntimeClassName,
+    async_buffer_write_GetTrustLevel,
+    /* IAsyncOperation<IInspectable> */
+    async_buffer_write_put_Progress,
+    async_buffer_write_get_Progress,
+    async_buffer_write_put_Completed,
+    async_buffer_write_get_Completed,
+    async_buffer_write_GetResults,
+};
+
+HRESULT async_operation_buffer_write_create( IUnknown *invoker, IUnknown *param, async_operation_callback callback,
+                                            IAsyncOperationWithProgress_UINT32_UINT32 **out )
+{
+    struct async_buffer_write *impl;
+    HRESULT hr;
+
+    *out = NULL;
+    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+    impl->IAsyncOperationWithProgress_UINT32_UINT32_iface.lpVtbl = &async_buffer_write_vtbl;
+    impl->ref = 1;
+    impl->iid = &IID_IAsyncOperationWithProgress_UINT32_UINT32;
+
+    if (FAILED(hr = async_info_create( invoker, param, callback, (IInspectable *)&impl->IAsyncOperationWithProgress_UINT32_UINT32_iface, &impl->IAsyncInfoImpl_inner )) ||
+        FAILED(hr = IAsyncInfoImpl_Start( impl->IAsyncInfoImpl_inner )))
+    {
+        if (impl->IAsyncInfoImpl_inner) IAsyncInfoImpl_Release( impl->IAsyncInfoImpl_inner );
+        free( impl );
+        return hr;
+    }
+
+    *out = &impl->IAsyncOperationWithProgress_UINT32_UINT32_iface;
+    TRACE( "created IAsyncOperationWithProgress_UINT32_UINT32 %p\n", *out );
+    return S_OK;
+}
+
+struct async_bool
+{
+    IAsyncOperation_boolean IAsyncOperation_boolean_iface;
+    IAsyncInfoImpl *IAsyncInfoImpl_inner;
+    LONG ref;
+};
+
+static inline struct async_bool *impl_from_IAsyncOperation_boolean( IAsyncOperation_boolean *iface )
+{
+    return CONTAINING_RECORD( iface, struct async_bool, IAsyncOperation_boolean_iface );
+}
+
+static HRESULT WINAPI async_bool_QueryInterface( IAsyncOperation_boolean *iface, REFIID iid, void **out )
+{
+    struct async_bool *impl = impl_from_IAsyncOperation_boolean( iface );
+
+    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
+
+    if (IsEqualGUID( iid, &IID_IUnknown ) ||
+        IsEqualGUID( iid, &IID_IInspectable ) ||
+        IsEqualGUID( iid, &IID_IAgileObject ) ||
+        IsEqualGUID( iid, &IID_IAsyncOperation_boolean ))
+    {
+        IInspectable_AddRef( (*out = &impl->IAsyncOperation_boolean_iface) );
+        return S_OK;
+    }
+
+    return IAsyncInfoImpl_QueryInterface( impl->IAsyncInfoImpl_inner, iid, out );
+}
+
+static ULONG WINAPI async_bool_AddRef( IAsyncOperation_boolean *iface )
+{
+    struct async_bool *impl = impl_from_IAsyncOperation_boolean( iface );
+    ULONG ref = InterlockedIncrement( &impl->ref );
+    TRACE( "iface %p, ref %lu.\n", iface, ref );
+    return ref;
+}
+
+static ULONG WINAPI async_bool_Release( IAsyncOperation_boolean *iface )
+{
+    struct async_bool *impl = impl_from_IAsyncOperation_boolean( iface );
+    ULONG ref = InterlockedDecrement( &impl->ref );
+    TRACE( "iface %p, ref %lu.\n", iface, ref );
+
+    if (!ref)
+    {
+        /* guard against re-entry if inner releases an outer iface */
+        InterlockedIncrement( &impl->ref );
+        IAsyncInfoImpl_Release( impl->IAsyncInfoImpl_inner );
+        free( impl );
+    }
+
+    return ref;
+}
+
+static HRESULT WINAPI async_bool_GetIids( IAsyncOperation_boolean *iface, ULONG *iid_count, IID **iids )
+{
+    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI async_bool_GetRuntimeClassName( IAsyncOperation_boolean *iface, HSTRING *class_name )
+{
+    return WindowsCreateString( L"Windows.Foundation.IAsyncOperation`1<Boolean>",
+                                ARRAY_SIZE(L"Windows.Foundation.IAsyncOperation`1<Boolean>") - 1,
+                                class_name );
+}
+
+static HRESULT WINAPI async_bool_GetTrustLevel( IAsyncOperation_boolean *iface, TrustLevel *trust_level )
+{
+    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI async_bool_put_Completed( IAsyncOperation_boolean *iface, IAsyncOperationCompletedHandler_boolean *bool_handler )
+{
+    IAsyncOperationCompletedHandlerImpl *handler = (IAsyncOperationCompletedHandlerImpl *)bool_handler;
+    struct async_bool *impl = impl_from_IAsyncOperation_boolean( iface );
+    TRACE( "iface %p, handler %p.\n", iface, handler );
+    return IAsyncInfoImpl_put_Completed( impl->IAsyncInfoImpl_inner, handler );
+}
+
+static HRESULT WINAPI async_bool_get_Completed( IAsyncOperation_boolean *iface, IAsyncOperationCompletedHandler_boolean **bool_handler )
+{
+    IAsyncOperationCompletedHandlerImpl **handler = (IAsyncOperationCompletedHandlerImpl **)bool_handler;
+    struct async_bool *impl = impl_from_IAsyncOperation_boolean( iface );
+    TRACE( "iface %p, handler %p.\n", iface, handler );
+    return IAsyncInfoImpl_get_Completed( impl->IAsyncInfoImpl_inner, handler );
+}
+
+static HRESULT WINAPI async_bool_GetResults( IAsyncOperation_boolean *iface, BOOLEAN *results )
+{
+    struct async_bool *impl = impl_from_IAsyncOperation_boolean( iface );
+    PROPVARIANT result = {.vt = VT_BOOL};
+    HRESULT hr;
+
+    TRACE( "iface %p, results %p.\n", iface, results );
+
+    if (!results) return E_POINTER;
+    *results = FALSE;
+    hr = IAsyncInfoImpl_get_Result( impl->IAsyncInfoImpl_inner, &result );
+
+    if (SUCCEEDED(hr)) *results = !!result.boolVal;
+    PropVariantClear( &result );
+    return hr;
+}
+
+static const struct IAsyncOperation_booleanVtbl async_bool_vtbl =
+{
+    /* IUnknown methods */
+    async_bool_QueryInterface,
+    async_bool_AddRef,
+    async_bool_Release,
+    /* IInspectable methods */
+    async_bool_GetIids,
+    async_bool_GetRuntimeClassName,
+    async_bool_GetTrustLevel,
+    /* IAsyncOperation<boolean> */
+    async_bool_put_Completed,
+    async_bool_get_Completed,
+    async_bool_GetResults,
+};
+
+HRESULT async_operation_boolean_create( IUnknown *invoker, IUnknown *param, async_operation_callback callback,
+                                        IAsyncOperation_boolean **out )
+{
+    struct async_bool *impl;
+    HRESULT hr;
+
+    *out = NULL;
+    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+    impl->IAsyncOperation_boolean_iface.lpVtbl = &async_bool_vtbl;
+    impl->ref = 1;
+
+    if (FAILED(hr = async_info_create( invoker, param, callback, (IInspectable *)&impl->IAsyncOperation_boolean_iface, &impl->IAsyncInfoImpl_inner )) ||
+        FAILED(hr = IAsyncInfoImpl_Start( impl->IAsyncInfoImpl_inner )))
+    {
+        if (impl->IAsyncInfoImpl_inner) IAsyncInfoImpl_Release( impl->IAsyncInfoImpl_inner );
+        free( impl );
+        return hr;
+    }
+
+    *out = &impl->IAsyncOperation_boolean_iface;
+    TRACE( "created IAsyncOperation_boolean %p\n", *out );
     return S_OK;
 }

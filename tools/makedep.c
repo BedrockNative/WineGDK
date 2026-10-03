@@ -4042,6 +4042,8 @@ static void output_import_lib( struct makefile *make, unsigned int arch )
     output_filenames( target_flags[hybrid_arch ? hybrid_arch : arch] );
     if (make->is_win16) output_filename( "-m16" );
     if (hybrid_arch) output_filenames( hybrid_target_flags[hybrid_arch] );
+    output_filename( "-F" );
+    output_filename( make->module );
     output_filename( "--export" );
     output_filename( spec_file );
     output_filenames_obj_dir( make, make->implib_files[arch] );

@@ -478,18 +478,44 @@ void WINAPI RoFailFastWithErrorContextInternal2(HRESULT error, ULONG exception_c
     RaiseFailFastException(NULL, NULL, 0);
 }
 
+struct apartment_shutdown_registration
+{
+    struct list entry;
+    IApartmentShutdown *callback;
+    UINT64 oxid;
+    APARTMENT_SHUTDOWN_REGISTRATION_COOKIE cookie;
+};
+static struct list shutdown_registrations=LIST_INIT(shutdown_registrations);
+static SRWLOCK shutdown_lock=SRWLOCK_INIT;
+static ULONG_PTR next_shutdown_cookie;
+
+void ro_notify_apartment_shutdown(UINT64 oxid)
+{
+    struct apartment_shutdown_registration *entry,*next;
+    struct list pending=LIST_INIT(pending);
+    AcquireSRWLockExclusive(&shutdown_lock);
+    LIST_FOR_EACH_ENTRY_SAFE(entry,next,&shutdown_registrations,struct apartment_shutdown_registration,entry)
+        if (entry->oxid==oxid) { list_remove(&entry->entry); list_add_tail(&pending,&entry->entry); }
+    ReleaseSRWLockExclusive(&shutdown_lock);
+    LIST_FOR_EACH_ENTRY_SAFE(entry,next,&pending,struct apartment_shutdown_registration,entry)
+    {
+        list_remove(&entry->entry);
+        IApartmentShutdown_OnUninitialize(entry->callback,oxid);
+        IApartmentShutdown_Release(entry->callback);
+        free(entry);
+    }
+}
+
 /***********************************************************************
  *      RoGetApartmentIdentifier (combase.@)
  */
 HRESULT WINAPI RoGetApartmentIdentifier(UINT64 *identifier)
 {
-    FIXME("(%p): stub\n", identifier);
-
-    if (!identifier)
-        return E_INVALIDARG;
-
-    *identifier = 0xdeadbeef;
-    return S_OK;
+    struct apartment *apt;
+    if (!identifier) return E_INVALIDARG;
+    if (!(apt=apartment_get_current_or_mta())) return CO_E_NOTINITIALIZED;
+    *identifier=apartment_getoxid(apt);
+    apartment_release(apt); return S_OK;
 }
 
 /***********************************************************************
@@ -498,17 +524,31 @@ HRESULT WINAPI RoGetApartmentIdentifier(UINT64 *identifier)
 HRESULT WINAPI RoRegisterForApartmentShutdown(IApartmentShutdown *callback,
         UINT64 *identifier, APARTMENT_SHUTDOWN_REGISTRATION_COOKIE *cookie)
 {
-    HRESULT hr;
+    struct apartment_shutdown_registration *entry;
+    struct apartment *apt;
+    if (!callback || !identifier || !cookie) return E_INVALIDARG;
+    *cookie=NULL;
+    if (!(apt=apartment_get_current_or_mta())) return CO_E_NOTINITIALIZED;
+    if (!(entry=calloc(1,sizeof(*entry)))) { apartment_release(apt); return E_OUTOFMEMORY; }
+    entry->callback=callback; IApartmentShutdown_AddRef(callback);
+    entry->oxid=*identifier=apartment_getoxid(apt);
+    AcquireSRWLockExclusive(&shutdown_lock);
+    entry->cookie=(APARTMENT_SHUTDOWN_REGISTRATION_COOKIE)++next_shutdown_cookie;
+    list_add_tail(&shutdown_registrations,&entry->entry);
+    *cookie=entry->cookie;
+    ReleaseSRWLockExclusive(&shutdown_lock);
+    apartment_release(apt); return S_OK;
+}
 
-    FIXME("(%p, %p, %p): stub\n", callback, identifier, cookie);
-
-    hr = RoGetApartmentIdentifier(identifier);
-    if (FAILED(hr))
-        return hr;
-
-    if (cookie)
-        *cookie = (void *)0xcafecafe;
-    return S_OK;
+HRESULT WINAPI RoUnregisterForApartmentShutdown(APARTMENT_SHUTDOWN_REGISTRATION_COOKIE cookie)
+{
+    struct apartment_shutdown_registration *entry,*found=NULL;
+    AcquireSRWLockExclusive(&shutdown_lock);
+    LIST_FOR_EACH_ENTRY(entry,&shutdown_registrations,struct apartment_shutdown_registration,entry)
+        if (entry->cookie==cookie) { found=entry; list_remove(&entry->entry); break; }
+    ReleaseSRWLockExclusive(&shutdown_lock);
+    if (!found) return E_INVALIDARG;
+    IApartmentShutdown_Release(found->callback); free(found); return S_OK;
 }
 
 /***********************************************************************

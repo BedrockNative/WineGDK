@@ -261,15 +261,19 @@ static HRESULT WINAPI media_device_statics_GetTrustLevel(IMediaDeviceStatics *if
 static HRESULT WINAPI media_device_statics_GetAudioCaptureSelector(IMediaDeviceStatics *iface,
         HSTRING *value)
 {
-    FIXME("iface %p, value %p stub!\n", iface, value);
-    return E_NOTIMPL;
+    static const WCHAR query[] = L"System.Devices.InterfaceClassGuid:=\"{2eef81be-33fa-4800-9670-1cd474972c3f}\"";
+    TRACE("iface %p, value %p\n", iface, value);
+    if (!value) return E_POINTER;
+    return WindowsCreateString(query, ARRAY_SIZE(query) - 1, value);
 }
 
 static HRESULT WINAPI media_device_statics_GetAudioRenderSelector(IMediaDeviceStatics *iface,
         HSTRING *value)
 {
-    FIXME("iface %p, value %p stub!\n", iface, value);
-    return E_NOTIMPL;
+    static const WCHAR query[] = L"System.Devices.InterfaceClassGuid:=\"{e6327cad-dcec-4949-ae8a-991e976a79d2}\"";
+    TRACE("iface %p, value %p\n", iface, value);
+    if (!value) return E_POINTER;
+    return WindowsCreateString(query, ARRAY_SIZE(query) - 1, value);
 }
 
 static HRESULT WINAPI media_device_statics_GetVideoCaptureSelector(IMediaDeviceStatics *iface,

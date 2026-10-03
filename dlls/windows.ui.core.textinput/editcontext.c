@@ -60,6 +60,13 @@ static ULONG WINAPI core_text_edit_context_Release( ICoreTextEditContext *iface 
     struct core_text_edit_context *impl = impl_from_ICoreTextEditContext( iface );
     ULONG ref = InterlockedDecrement( &impl->ref );
     TRACE( "iface %p decreasing refcount to %lu.\n", iface, ref );
+    if (!ref)
+    {
+        unsigned int i;
+        for (i = 0; i < ARRAY_SIZE(impl->events); ++i) winrt_event_clear(&impl->events[i]);
+        WindowsDeleteString(impl->name);
+        free(impl);
+    }
     return ref;
 }
 
@@ -84,173 +91,160 @@ static HRESULT WINAPI core_text_edit_context_GetTrustLevel( ICoreTextEditContext
 
 static HRESULT WINAPI core_text_edit_context_get_Name(ICoreTextEditContext *iface, HSTRING *value)
 {
-    FIXME("iface %p, value %p stub!\n", iface, value);
-    return E_NOTIMPL;
+    return WindowsDuplicateString(impl_from_ICoreTextEditContext(iface)->name, value);
 }
 
 static HRESULT WINAPI core_text_edit_context_put_Name(ICoreTextEditContext *iface, HSTRING value)
 {
-    FIXME("iface %p, value %p stub!\n", iface, (void*)value);
-    return E_NOTIMPL;
+    struct core_text_edit_context *impl = impl_from_ICoreTextEditContext(iface);
+    HSTRING copy;
+    HRESULT hr = WindowsDuplicateString(value, &copy);
+    if (FAILED(hr)) return hr;
+    WindowsDeleteString(impl->name); impl->name = copy;
+    return S_OK;
 }
 
 static HRESULT WINAPI core_text_edit_context_get_InputScope(ICoreTextEditContext *iface, CoreTextInputScope *value)
 {
-    FIXME("iface %p, value %p stub!\n", iface, value);
-    return E_NOTIMPL;
+    if (!value) return E_POINTER;
+    *value = impl_from_ICoreTextEditContext(iface)->scope;
+    return S_OK;
 }
 
 static HRESULT WINAPI core_text_edit_context_put_InputScope(ICoreTextEditContext *iface, CoreTextInputScope value)
 {
-    FIXME("iface %p, value %d stub!\n", iface, (int)value);
-    return E_NOTIMPL;
+    impl_from_ICoreTextEditContext(iface)->scope = value;
+    return S_OK;
 }
 
 static HRESULT WINAPI core_text_edit_context_get_IsReadOnly(ICoreTextEditContext *iface, boolean *value)
 {
-    FIXME("iface %p, value %p stub!\n", iface, value);
-    return E_NOTIMPL;
+    if (!value) return E_POINTER;
+    *value = impl_from_ICoreTextEditContext(iface)->read_only;
+    return S_OK;
 }
 
 static HRESULT WINAPI core_text_edit_context_put_IsReadOnly(ICoreTextEditContext *iface, boolean value)
 {
-    FIXME("iface %p, value %d stub!\n", iface, (int)value);
-    return E_NOTIMPL;
+    impl_from_ICoreTextEditContext(iface)->read_only = value;
+    return S_OK;
 }
 
 static HRESULT WINAPI core_text_edit_context_get_InputPaneDisplayPolicy(ICoreTextEditContext *iface, CoreTextInputPaneDisplayPolicy *value)
 {
-    FIXME("iface %p, value %p stub!\n", iface, value);
-    return E_NOTIMPL;
+    if (!value) return E_POINTER;
+    *value = impl_from_ICoreTextEditContext(iface)->policy;
+    return S_OK;
 }
 
 static HRESULT WINAPI core_text_edit_context_put_InputPaneDisplayPolicy(ICoreTextEditContext *iface, CoreTextInputPaneDisplayPolicy value)
 {
-    FIXME("iface %p, value %d stub!\n", iface, (int)value);
+    impl_from_ICoreTextEditContext(iface)->policy = value;
     return S_OK;
 }
 
 static HRESULT WINAPI core_text_edit_context_add_TextRequested(ICoreTextEditContext *iface, ITypedEventHandler_CoreTextEditContext_CoreTextTextRequestedEventArgs *handler, EventRegistrationToken *cookie)
 {
-    FIXME("iface %p, handler %p, cookie %p stub!\n", iface, handler, cookie);
-    return S_OK;
+    return winrt_event_add(&impl_from_ICoreTextEditContext(iface)->events[0], handler, cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_remove_TextRequested(ICoreTextEditContext *iface, EventRegistrationToken cookie)
 {
-    FIXME("iface %p, cookie %p stub!\n", iface, (void*)&cookie);
-    return S_OK;
+    return winrt_event_remove(&impl_from_ICoreTextEditContext(iface)->events[0], cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_add_SelectionRequested(ICoreTextEditContext *iface, ITypedEventHandler_CoreTextEditContext_CoreTextSelectionRequestedEventArgs *handler, EventRegistrationToken *cookie)
 {
-    FIXME("iface %p, handler %p, cookie %p stub!\n", iface, handler, cookie);
-    return S_OK;
+    return winrt_event_add(&impl_from_ICoreTextEditContext(iface)->events[1], handler, cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_remove_SelectionRequested(ICoreTextEditContext *iface, EventRegistrationToken cookie)
 {
-    FIXME("iface %p, cookie %p stub!\n", iface, (void*)&cookie);
-    return S_OK;
+    return winrt_event_remove(&impl_from_ICoreTextEditContext(iface)->events[1], cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_add_LayoutRequested(ICoreTextEditContext *iface, ITypedEventHandler_CoreTextEditContext_CoreTextLayoutRequestedEventArgs *handler, EventRegistrationToken *cookie)
 {
-    FIXME("iface %p, handler %p, cookie %p stub!\n", iface, handler, cookie);
-    return S_OK;
+    return winrt_event_add(&impl_from_ICoreTextEditContext(iface)->events[2], handler, cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_remove_LayoutRequested(ICoreTextEditContext *iface, EventRegistrationToken cookie)
 {
-    FIXME("iface %p, cookie %p stub!\n", iface, (void*)&cookie);
-    return S_OK;
+    return winrt_event_remove(&impl_from_ICoreTextEditContext(iface)->events[2], cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_add_TextUpdating(ICoreTextEditContext *iface, ITypedEventHandler_CoreTextEditContext_CoreTextTextUpdatingEventArgs *handler, EventRegistrationToken *cookie)
 {
-    FIXME("iface %p, handler %p, cookie %p stub!\n", iface, handler, cookie);
-    return S_OK;
+    return winrt_event_add(&impl_from_ICoreTextEditContext(iface)->events[3], handler, cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_remove_TextUpdating(ICoreTextEditContext *iface, EventRegistrationToken cookie)
 {
-    FIXME("iface %p, cookie %p stub!\n", iface, (void*)&cookie);
-    return S_OK;
+    return winrt_event_remove(&impl_from_ICoreTextEditContext(iface)->events[3], cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_add_SelectionUpdating(ICoreTextEditContext *iface, ITypedEventHandler_CoreTextEditContext_CoreTextSelectionUpdatingEventArgs *handler, EventRegistrationToken *cookie)
 {
-    FIXME("iface %p, handler %p, cookie %p stub!\n", iface, handler, cookie);
-    return S_OK;
+    return winrt_event_add(&impl_from_ICoreTextEditContext(iface)->events[4], handler, cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_remove_SelectionUpdating(ICoreTextEditContext *iface, EventRegistrationToken cookie)
 {
-    FIXME("iface %p, cookie %p stub!\n", iface, (void*)&cookie);
-    return S_OK;
+    return winrt_event_remove(&impl_from_ICoreTextEditContext(iface)->events[4], cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_add_FormatUpdating(ICoreTextEditContext *iface, ITypedEventHandler_CoreTextEditContext_CoreTextFormatUpdatingEventArgs *handler, EventRegistrationToken *cookie)
 {
-    FIXME("iface %p, FormatUpdating add stub!\n", iface);
-    return S_OK;
+    return winrt_event_add(&impl_from_ICoreTextEditContext(iface)->events[5], handler, cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_remove_FormatUpdating(ICoreTextEditContext *iface, EventRegistrationToken cookie)
 {
-    FIXME("iface %p, FormatUpdating remove stub!\n", iface);
-    return S_OK;
+    return winrt_event_remove(&impl_from_ICoreTextEditContext(iface)->events[5], cookie);
 }
 
 /* CompositionStarted (flattened form) */
 static HRESULT WINAPI core_text_edit_context_add_CompositionStarted(ICoreTextEditContext *iface, ITypedEventHandler_CoreTextEditContext_CoreTextCompositionStartedEventArgs *handler, EventRegistrationToken *cookie)
 {
-    FIXME("iface %p, CompositionStarted add stub!\n", iface);
-    return S_OK;
+    return winrt_event_add(&impl_from_ICoreTextEditContext(iface)->events[6], handler, cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_remove_CompositionStarted(ICoreTextEditContext *iface, EventRegistrationToken cookie)
 {
-    FIXME("iface %p, CompositionStarted remove stub!\n", iface);
-    return S_OK;
+    return winrt_event_remove(&impl_from_ICoreTextEditContext(iface)->events[6], cookie);
 }
 
 /* CompositionCompleted (flattened form) */
 static HRESULT WINAPI core_text_edit_context_add_CompositionCompleted(ICoreTextEditContext *iface, ITypedEventHandler_CoreTextEditContext_CoreTextCompositionCompletedEventArgs *handler, EventRegistrationToken *cookie)
 {
-    FIXME("iface %p, CompositionCompleted add stub!\n", iface);
-    return S_OK;
+    return winrt_event_add(&impl_from_ICoreTextEditContext(iface)->events[7], handler, cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_remove_CompositionCompleted(ICoreTextEditContext *iface, EventRegistrationToken cookie)
 {
-    FIXME("iface %p, CompositionCompleted remove stub!\n", iface);
-    return S_OK;
+    return winrt_event_remove(&impl_from_ICoreTextEditContext(iface)->events[7], cookie);
 }
 
 /* FocusRemoved (flattened form) */
 static HRESULT WINAPI core_text_edit_context_add_FocusRemoved(ICoreTextEditContext *iface, ITypedEventHandler_CoreTextEditContext_IInspectable *handler, EventRegistrationToken *cookie)
 {
-    FIXME("iface %p, FocusRemoved add stub!\n", iface);
-    return E_NOTIMPL;
+    return winrt_event_add(&impl_from_ICoreTextEditContext(iface)->events[8], handler, cookie);
 }
 
 static HRESULT WINAPI core_text_edit_context_remove_FocusRemoved(ICoreTextEditContext *iface, EventRegistrationToken cookie)
 {
-    FIXME("iface %p, FocusRemoved remove stub!\n", iface);
-    return E_NOTIMPL;
+    return winrt_event_remove(&impl_from_ICoreTextEditContext(iface)->events[8], cookie);
 }
 
 /* Notifications */
 static HRESULT WINAPI core_text_edit_context_NotifyFocusEnter(ICoreTextEditContext *iface)
 {
-    FIXME("iface %p, NotifyFocusEnter stub!\n", iface);
-    return S_OK;
+    return edit_context_focus(impl_from_ICoreTextEditContext(iface));
 }
 
 static HRESULT WINAPI core_text_edit_context_NotifyFocusLeave(ICoreTextEditContext *iface)
 {
-    FIXME("iface %p, NotifyFocusLeave stub!\n", iface);
+    edit_context_blur(impl_from_ICoreTextEditContext(iface));
     return S_OK;
 }
 
@@ -259,21 +253,28 @@ static HRESULT WINAPI core_text_edit_context_NotifyTextChanged(ICoreTextEditCont
                                                                INT32 newLength,
                                                                CoreTextRange newSelection)
 {
-    FIXME("iface %p, modifiedRange %p, newLength %d, newSelection %p stub!\n",
-          iface, (void*)&modifiedRange, (int)newLength, (void*)&newSelection);
+    struct core_text_edit_context *impl = impl_from_ICoreTextEditContext(iface);
+    if (newLength < 0 || modifiedRange.StartCaretPosition < 0 ||
+        modifiedRange.EndCaretPosition < modifiedRange.StartCaretPosition ||
+        newSelection.StartCaretPosition < 0 || newSelection.EndCaretPosition < newSelection.StartCaretPosition) return E_INVALIDARG;
+    impl->selection = newSelection;
+    ++impl->selection_version;
     return S_OK;
 }
 
 static HRESULT WINAPI core_text_edit_context_NotifySelectionChanged(ICoreTextEditContext *iface,
                                                                     CoreTextRange selection)
 {
-    FIXME("iface %p, selection %p stub!\n", iface, (void*)&selection);
+    struct core_text_edit_context *impl = impl_from_ICoreTextEditContext(iface);
+    if (selection.StartCaretPosition < 0 || selection.EndCaretPosition < selection.StartCaretPosition) return E_INVALIDARG;
+    impl->selection = selection;
+    ++impl->selection_version;
     return S_OK;
 }
 
 static HRESULT WINAPI core_text_edit_context_NotifyLayoutChanged(ICoreTextEditContext *iface)
 {
-    FIXME("iface %p, NotifyLayoutChanged stub!\n", iface);
+    TRACE("iface %p\n", iface);
     return S_OK;
 }
 

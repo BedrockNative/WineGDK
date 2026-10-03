@@ -21,6 +21,7 @@
 
 #include "initguid.h"
 #include "roapi.h"
+#include "ctxtcall.h"
 #include "winstring.h"
 #define WIDL_using_Windows_Foundation
 #include "windows.foundation.h"
@@ -29,10 +30,29 @@
 
 #include "cxx.h"
 #include "private.h"
+#include "shellapi.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(vccorlib);
 
 CREATE_TYPE_INFO_VTABLE
+
+static INIT_ONCE command_line_once = INIT_ONCE_STATIC_INIT;
+static WCHAR **command_line_argv;
+static int command_line_argc;
+
+static BOOL CALLBACK init_command_line(INIT_ONCE *once, void *param, void **context)
+{
+    command_line_argv = CommandLineToArgvW(GetCommandLineW(), &command_line_argc);
+    return !!command_line_argv;
+}
+
+WCHAR ** __cdecl GetCmdArguments(int *argc)
+{
+    if (!InitOnceExecuteOnce(&command_line_once, init_command_line, NULL, NULL))
+        __abi_WinRTraiseOutOfMemoryException();
+    if (argc) *argc = command_line_argc;
+    return command_line_argv;
+}
 
 HRESULT __cdecl InitializeData(int type)
 {
@@ -87,7 +107,7 @@ HRESULT WINAPI GetIidsFn(unsigned int count, unsigned int *copied, const GUID *s
 
 static void *try_Allocate(size_t size)
 {
-    return malloc(size);
+    return calloc(1, size);
 }
 
 void *__cdecl Allocate(size_t size)
@@ -920,4 +940,183 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
         init_delegate(inst);
     }
     return TRUE;
+}
+
+/* Platform::Object is an abstract IInspectable base. Derived C++/CX classes
+ * replace these pure virtual slots with their generated ABI implementation. */
+extern int __cdecl _purecall(void);
+void * __cdecl Object_ctor(void **object)
+{
+    static void * const vtable[] = {_purecall, _purecall, _purecall, _purecall, _purecall, _purecall};
+    *object = (void *)vtable;
+    return object;
+}
+
+IUnknown * WINAPI GetObjectContext(void)
+{
+    IUnknown *context = NULL;
+    HRESULT hr = CoGetObjectContext(&IID_IContextCallback, (void **)&context);
+    if (FAILED(hr)) __abi_WinRTraiseCOMException(hr);
+    return context;
+}
+
+struct context_call
+{
+    IUnknown *object;
+    const GUID *iid;
+    IStream *stream;
+};
+
+static HRESULT WINAPI marshal_in_context(ComCallData *data)
+{
+    struct context_call *call = data->pUserDefined;
+    return CoMarshalInterThreadInterfaceInStream(call->iid, call->object, &call->stream);
+}
+
+HRESULT WINAPI GetProxyImpl(IUnknown *object, const GUID *iid, IUnknown *context, void **out)
+{
+    struct context_call call = {object, iid, NULL};
+    ComCallData data = {0, 0, &call};
+    IContextCallback *callback;
+    HRESULT hr;
+    if (!out) return E_POINTER;
+    *out = NULL;
+    if (!object || !context || !iid) return E_INVALIDARG;
+    hr = IUnknown_QueryInterface(context, &IID_IContextCallback, (void **)&callback);
+    if (FAILED(hr)) return hr;
+    hr = IContextCallback_ContextCallback(callback, marshal_in_context, &data, &IID_IContextCallback, 5, NULL);
+    IContextCallback_Release(callback);
+    if (SUCCEEDED(hr)) hr = CoGetInterfaceAndReleaseStream(call.stream, iid, out);
+    return hr;
+}
+
+static HRESULT WINAPI release_in_context(ComCallData *data)
+{
+    IUnknown_Release((IUnknown *)data->pUserDefined);
+    return S_OK;
+}
+
+HRESULT WINAPI ReleaseInContextImpl(IUnknown *object, IUnknown *context)
+{
+    ComCallData data = {0, 0, object};
+    IContextCallback *callback;
+    HRESULT hr;
+    if (!object || !context) return E_INVALIDARG;
+    hr = IUnknown_QueryInterface(context, &IID_IContextCallback, (void **)&callback);
+    if (FAILED(hr)) return hr;
+    hr = IContextCallback_ContextCallback(callback, release_in_context, &data, &IID_IContextCallback, 5, NULL);
+    IContextCallback_Release(callback);
+    return hr;
+}
+
+
+/* The compiler embeds this property-value interface immediately after the
+ * array's generated IInspectable interface. Scalar access is invalid for arrays. */
+static IInspectable *array_outer(IPropertyValue *iface)
+{ return (IInspectable *)((void **)iface - 1); }
+static HRESULT WINAPI array_QueryInterface(IPropertyValue *iface, REFIID iid, void **out)
+{ return IInspectable_QueryInterface(array_outer(iface), iid, out); }
+static ULONG WINAPI array_AddRef(IPropertyValue *iface)
+{ return IInspectable_AddRef(array_outer(iface)); }
+static ULONG WINAPI array_Release(IPropertyValue *iface)
+{ return IInspectable_Release(array_outer(iface)); }
+static HRESULT WINAPI array_GetIids(IPropertyValue *iface, ULONG *count, IID **iids)
+{ return IInspectable_GetIids(array_outer(iface), count, iids); }
+static HRESULT WINAPI array_GetRuntimeClassName(IPropertyValue *iface, HSTRING *name)
+{ return IInspectable_GetRuntimeClassName(array_outer(iface), name); }
+static HRESULT WINAPI array_GetTrustLevel(IPropertyValue *iface, TrustLevel *level)
+{ return IInspectable_GetTrustLevel(array_outer(iface), level); }
+static HRESULT WINAPI array_get_Type(IPropertyValue *iface, PropertyType *type)
+{ if (!type) return E_POINTER; *type = PropertyType_OtherTypeArray; return S_OK; }
+static HRESULT WINAPI array_get_IsNumericScalar(IPropertyValue *iface, boolean *value)
+{ if (!value) return E_POINTER; *value = FALSE; return S_OK; }
+#define ARRAY_SCALAR(name, type) \
+static HRESULT WINAPI array_Get##name(IPropertyValue *iface, type *out) \
+{ return E_NOTIMPL; }
+#define ARRAY_VALUE(name, type) \
+static HRESULT WINAPI array_Get##name##Array(IPropertyValue *iface, UINT32 *count, type **out) \
+{ if (!count || !out) return E_POINTER; *count = 0; *out = NULL; FIXME("%s array unboxing is not implemented.\n", #name); return E_NOTIMPL; }
+ARRAY_SCALAR(UInt8, BYTE)
+ARRAY_SCALAR(Int16, INT16)
+ARRAY_SCALAR(UInt16, UINT16)
+ARRAY_SCALAR(Int32, INT32)
+ARRAY_SCALAR(UInt32, UINT32)
+ARRAY_SCALAR(Int64, INT64)
+ARRAY_SCALAR(UInt64, UINT64)
+ARRAY_SCALAR(Single, FLOAT)
+ARRAY_SCALAR(Double, DOUBLE)
+ARRAY_SCALAR(Char16, WCHAR)
+ARRAY_SCALAR(Boolean, boolean)
+ARRAY_SCALAR(String, HSTRING)
+ARRAY_SCALAR(Guid, GUID)
+ARRAY_SCALAR(DateTime, DateTime)
+ARRAY_SCALAR(TimeSpan, TimeSpan)
+ARRAY_SCALAR(Point, Point)
+ARRAY_SCALAR(Size, Size)
+ARRAY_SCALAR(Rect, Rect)
+ARRAY_VALUE(UInt8, BYTE)
+ARRAY_VALUE(Int16, INT16)
+ARRAY_VALUE(UInt16, UINT16)
+ARRAY_VALUE(Int32, INT32)
+ARRAY_VALUE(UInt32, UINT32)
+ARRAY_VALUE(Int64, INT64)
+ARRAY_VALUE(UInt64, UINT64)
+ARRAY_VALUE(Single, FLOAT)
+ARRAY_VALUE(Double, DOUBLE)
+ARRAY_VALUE(Char16, WCHAR)
+ARRAY_VALUE(Boolean, boolean)
+ARRAY_VALUE(String, HSTRING)
+ARRAY_VALUE(Inspectable, IInspectable *)
+ARRAY_VALUE(Guid, GUID)
+ARRAY_VALUE(DateTime, DateTime)
+ARRAY_VALUE(TimeSpan, TimeSpan)
+ARRAY_VALUE(Point, Point)
+ARRAY_VALUE(Size, Size)
+ARRAY_VALUE(Rect, Rect)
+#undef ARRAY_SCALAR
+#undef ARRAY_VALUE
+void * WINAPI GetIBoxArrayVtable(void *unused)
+{
+    static const IPropertyValueVtbl vtable = {
+        array_QueryInterface, array_AddRef, array_Release, array_GetIids,
+        array_GetRuntimeClassName, array_GetTrustLevel, array_get_Type, array_get_IsNumericScalar,
+        array_GetUInt8,
+        array_GetInt16,
+        array_GetUInt16,
+        array_GetInt32,
+        array_GetUInt32,
+        array_GetInt64,
+        array_GetUInt64,
+        array_GetSingle,
+        array_GetDouble,
+        array_GetChar16,
+        array_GetBoolean,
+        array_GetString,
+        array_GetGuid,
+        array_GetDateTime,
+        array_GetTimeSpan,
+        array_GetPoint,
+        array_GetSize,
+        array_GetRect,
+        array_GetUInt8Array,
+        array_GetInt16Array,
+        array_GetUInt16Array,
+        array_GetInt32Array,
+        array_GetUInt32Array,
+        array_GetInt64Array,
+        array_GetUInt64Array,
+        array_GetSingleArray,
+        array_GetDoubleArray,
+        array_GetChar16Array,
+        array_GetBooleanArray,
+        array_GetStringArray,
+        array_GetInspectableArray,
+        array_GetGuidArray,
+        array_GetDateTimeArray,
+        array_GetTimeSpanArray,
+        array_GetPointArray,
+        array_GetSizeArray,
+        array_GetRectArray,
+    };
+    return (void *)&vtable;
 }

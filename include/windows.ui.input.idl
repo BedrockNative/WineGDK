@@ -168,3 +168,23 @@ namespace Windows.UI.Input {
         [contract(Windows.Foundation.UniversalApiContract, 1.0)] interface Windows.UI.Input.IPointerPointProperties2;
     }
 }
+
+namespace Windows.UI.Input {
+    runtimeclass PointerVisualizationSettings;
+    [uuid(4d1e6461-84f7-499d-bd91-2a36e2b7aaa2)]
+    interface IPointerVisualizationSettings : IInspectable
+    {
+        [propput] HRESULT IsContactFeedbackEnabled([in] boolean value);
+        [propget] HRESULT IsContactFeedbackEnabled([out, retval] boolean *value);
+        [propput] HRESULT IsBarrelButtonFeedbackEnabled([in] boolean value);
+        [propget] HRESULT IsBarrelButtonFeedbackEnabled([out, retval] boolean *value);
+    }
+    [uuid(68870edb-165b-4214-b4f3-584eca8c8a69)]
+    interface IPointerVisualizationSettingsStatics : IInspectable
+    {
+        HRESULT GetForCurrentView([out, retval] Windows.UI.Input.PointerVisualizationSettings **value);
+    }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0),
+     static(Windows.UI.Input.IPointerVisualizationSettingsStatics, Windows.Foundation.UniversalApiContract, 1.0)]
+    runtimeclass PointerVisualizationSettings { [default] interface Windows.UI.Input.IPointerVisualizationSettings; }
+}

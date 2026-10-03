@@ -37,7 +37,35 @@
 #define WIDL_using_Windows_UI
 #include "windows.ui.h"
 
+#define WIDL_using_Windows_UI_Core
+#include "windows.ui.core.h"
+struct dispatched_action;
+struct dispatcher_queue { SRWLOCK lock; HWND hwnd; struct dispatched_action *head; CoreDispatcherPriority current_priority; };
+#define WINE_WM_DISPATCH (WM_APP + 0x317)
+HRESULT dispatcher_queue_add(struct dispatcher_queue *queue, CoreDispatcherPriority priority, IDispatchedHandler *callback, IAsyncAction **out);
+BOOL dispatcher_queue_should_yield(struct dispatcher_queue *queue, CoreDispatcherPriority priority);
+void dispatcher_queue_dispatch(struct dispatcher_queue *queue);
+void dispatcher_queue_close(struct dispatcher_queue *queue);
+HRESULT xaml_input_create(ICoreWindow *window, UINT32 devices, IInspectable **out);
 extern IActivationFactory *color_helper_factory;
+extern IActivationFactory *application_factory;
+extern IActivationFactory *window_factory;
+extern IActivationFactory *composition_factory;
+void xaml_composition_clear(void);
+HRESULT xaml_get_core_window(IInspectable **out);
+void xaml_window_clear(void);
+HRESULT xaml_window_layout(void);
+boolean xaml_control_character(UINT32 character);
+HRESULT xaml_control_layout(IInspectable *object, Size available);
+HRESULT xaml_load_component(IInspectable *component, IUriRuntimeClass *uri);
+HRESULT xaml_control_set_string(IInspectable *object, const WCHAR *name, HSTRING value);
+HRESULT xaml_control_set_double(IInspectable *object, const WCHAR *name, DOUBLE value);
+HRESULT xaml_control_set_int(IInspectable *object, const WCHAR *name, INT32 value);
+HRESULT xaml_control_set_content(IInspectable *object, IInspectable *value);
+HRESULT xaml_control_add_child(IInspectable *object, IInspectable *value);
+struct vector_iids { const GUID *vector, *view, *iterable, *iterator; };
+HRESULT vector_create(const struct vector_iids *iids, void **out);
+HRESULT xaml_control_factory(const WCHAR *name, IActivationFactory **out);
 
 #define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \
     static inline impl_type *impl_from( iface_type *iface )                                        \

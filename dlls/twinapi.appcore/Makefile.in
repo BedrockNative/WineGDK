@@ -1,6 +1,6 @@
 EXTRADEFS = -D_CONTRACT_GEN
 MODULE    = twinapi.appcore.dll
-IMPORTS   = combase advapi32
+IMPORTS   = combase advapi32 windows.ui.dll psapi user32 comctl32
 
 SOURCES = \
 	advertising_manager.c \
@@ -10,4 +10,7 @@ SOURCES = \
 	client_device_information.c \
 	data_transfer.c \
 	core_application.c \
+	holographic.c \
+	memory.c \
+	power.c \
 	main.c

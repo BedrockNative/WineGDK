@@ -1,0 +1,41 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+#ifdef __WIDL__
+#pragma makedep header install winmd
+#pragma winrt ns_prefix
+#endif
+import "inspectable.idl";
+import "windows.foundation.idl";
+namespace Windows.ApplicationModel.ExtendedExecution {
+    typedef enum ExtendedExecutionReason ExtendedExecutionReason;
+    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
+    enum ExtendedExecutionReason { Unspecified = 0, LocationTracking = 1, SavingData = 2 };
+    typedef enum ExtendedExecutionResult ExtendedExecutionResult;
+    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
+    enum ExtendedExecutionResult { Allowed = 0, Denied = 1 };
+    interface IExtendedExecutionSession;
+    runtimeclass ExtendedExecutionSession;
+}
+namespace Windows.Foundation {
+    declare { interface Windows.Foundation.AsyncOperationCompletedHandler<Windows.ApplicationModel.ExtendedExecution.ExtendedExecutionResult>; interface Windows.Foundation.IAsyncOperation<Windows.ApplicationModel.ExtendedExecution.ExtendedExecutionResult>; }
+}
+namespace Windows.ApplicationModel.ExtendedExecution {
+    [uuid(af908a2d-118b-48f1-9308-0c4fc41e200f), exclusiveto(Windows.ApplicationModel.ExtendedExecution.ExtendedExecutionSession),
+     contract(Windows.Foundation.UniversalApiContract, 1.0)]
+    interface IExtendedExecutionSession : IInspectable
+    {
+        [propget] HRESULT Reason([out, retval] ExtendedExecutionReason *value);
+        [propput] HRESULT Reason([in] ExtendedExecutionReason value);
+        [propget] HRESULT Description([out, retval] HSTRING *value);
+        [propput] HRESULT Description([in] HSTRING value);
+        [propget] HRESULT PercentProgress([out, retval] UINT32 *value);
+        [propput] HRESULT PercentProgress([in] UINT32 value);
+        HRESULT add_Revoked([in] IInspectable *handler, [out, retval] EventRegistrationToken *token);
+        HRESULT remove_Revoked([in] EventRegistrationToken token);
+        HRESULT RequestExtensionAsync([out, retval] Windows.Foundation.IAsyncOperation<Windows.ApplicationModel.ExtendedExecution.ExtendedExecutionResult> **value);
+    }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0), activatable(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile), threading(both)]
+    runtimeclass ExtendedExecutionSession {
+        [default] interface IExtendedExecutionSession;
+        interface Windows.Foundation.IClosable;
+    }
+}

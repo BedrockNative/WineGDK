@@ -37,6 +37,7 @@ HRESULT WINAPI ShowPlayerPickerUI(HSTRING prompt_display_text, const HSTRING *xu
         const HSTRING *preselected_xuids, size_t preselected_xuid_count, size_t min_selection_count,
         size_t max_selection_count, PlayerPickerUICompletionRoutine completion_routine, void *context);
 HRESULT WINAPI ShowProfileCardUI(HSTRING target_user_xuid, GameUICompletionRoutine completion_routine, void *context);
+HRESULT WINAPI ShowTitleAchievementsUI(UINT32 title_id, GameUICompletionRoutine completion_routine, void *context);
 
 #ifdef __cplusplus
 }

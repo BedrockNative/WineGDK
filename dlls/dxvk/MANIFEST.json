@@ -5,13 +5,20 @@
     "x86_64-windows/d3d9.dll": "c126316f7478eaff1ad8087702eda5930f2400187b9c8b3592219c34f6632780",
     "x86_64-windows/d3d10core.dll": "beffdd081dce91c2bccdc87845b88cbbb7848d39d4642143462d2556d69bd5d9",
     "x86_64-windows/d3d11.dll": "0a203b6255c893430f0a8461c618962df04e62aa41538d5a875b21868317cf9f",
-    "x86_64-windows/dxgi.dll": "e3c1178eb7f0dd59f91bcfcc257549e5b9cfdb5e8508719293de7f8704f53160",
+    "x86_64-windows/dxgi.dll": "5bcaa2e61aa4a99acfd78907eec0cbb82cc522c8e1f48d687130776f2c15f7bf",
     "i386-windows/d3d8.dll": "9152ba43386e756790a66f61cdcee01b3287d156d4161c7456d816faa82fc364",
     "i386-windows/d3d9.dll": "265888c31ca78dffa290c39cb7e50bfb02762590e41927906e46fb32f01497fa",
     "i386-windows/d3d10core.dll": "110c41a5f67a0ab6d4eea586708883ce05aede204a0df6665e6362669079c2ba",
     "i386-windows/d3d11.dll": "f44543cbe5c40202915a02ed6e9ac8140c3524e846ae67b01f6faa79485d1fd3",
-    "i386-windows/dxgi.dll": "abd1449dc28d536a4289c256ae7f4b6bbd15fa552792b7170c2ddece473c8bda"
+    "i386-windows/dxgi.dll": "42088cf35621b1797d9e5eb9e0cedc6ec472a9a9f2ea7eaf7567e71a1f936730"
   },
   "source": "https://github.com/doitsujin/dxvk/releases/tag/v3.1.1",
-  "documentation_source": "https://github.com/doitsujin/dxvk/tree/v3.1.1"
+  "documentation_source": "https://github.com/doitsujin/dxvk/tree/v3.1.1",
+  "patches": [
+    {
+      "path": "../../tools/uwp/dxvk-corewindow.patch",
+      "description": "CoreWindow presentation and full-window XAML composition swap chains",
+      "base_commit": "b1a1c99ab52b687cf950d62c88bc2fa316b41663"
+    }
+  ]
 }

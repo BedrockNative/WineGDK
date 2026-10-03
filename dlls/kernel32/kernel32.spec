@@ -1324,6 +1324,7 @@
 @ stdcall -import ResetWriteWatch(ptr long)
 @ stdcall -import ResizePseudoConsole(ptr long)
 @ stdcall ResolveDelayLoadedAPI(ptr ptr ptr ptr ptr long) NTDLL.LdrResolveDelayLoadedAPI
+@ stdcall ResolveDelayLoadsFromDll(ptr str long) NTDLL.LdrResolveDelayLoadsFromDll
 @ stdcall -import ResolveLocaleName(wstr ptr long)
 @ stdcall RestoreLastError(long) NTDLL.RtlRestoreLastWin32Error
 @ stdcall -import ResumeThread(long)

@@ -2131,6 +2131,8 @@ static NTSTATUS write_console( struct screen_buffer *screen_buffer, const WCHAR 
     {
         if (screen_buffer->mode & ENABLE_PROCESSED_OUTPUT)
         {
+            if (screen_buffer->mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING &&
+                process_vt_char(screen_buffer, buffer[i], &update_rect)) continue;
             switch (buffer[i])
             {
             case '\b':
@@ -2601,6 +2603,7 @@ static NTSTATUS screen_buffer_ioctl( struct screen_buffer *screen_buffer, unsign
     case IOCTL_CONDRV_SET_MODE:
         if (in_size != sizeof(unsigned int) || *out_size) return STATUS_INVALID_PARAMETER;
         screen_buffer->mode = *(unsigned int *)in_data;
+        if (!(screen_buffer->mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) screen_buffer->vt_state = 0;
         TRACE( "set %x mode\n", screen_buffer->mode );
         return STATUS_SUCCESS;
 
@@ -2939,9 +2942,10 @@ static int main_loop( struct console *console, HANDLE signal )
     for (;;)
     {
         if (console->win)
-            res = MsgWaitForMultipleObjects( wait_cnt, wait_handles, FALSE, INFINITE, QS_ALLINPUT );
+            res = MsgWaitForMultipleObjects( wait_cnt, wait_handles, FALSE,
+                                             console->native_terminal ? 250 : INFINITE, QS_ALLINPUT );
         else
-            res = WaitForMultipleObjects( wait_cnt, wait_handles, FALSE, INFINITE );
+            res = WaitForMultipleObjects( wait_cnt, wait_handles, FALSE, console->native_terminal ? 250 : INFINITE );
 
         if (res == WAIT_OBJECT_0 + wait_cnt)
         {
@@ -2961,6 +2965,26 @@ static int main_loop( struct console *console, HANDLE signal )
 
         switch (res)
         {
+        case WAIT_TIMEOUT:
+            if (console->native_terminal)
+            {
+                unsigned int width, height;
+                struct screen_buffer *screen = console->active;
+                if (!get_native_terminal_size(&width, &height)) return 0;
+                EnterCriticalSection(&console_section);
+                if ((screen->width != width || screen->height != height) &&
+                    !change_screen_buffer_size(screen, width, height))
+                {
+                    screen->win.left = screen->win.top = 0;
+                    screen->win.right = width - 1; screen->win.bottom = height - 1;
+                    screen->max_width = width; screen->max_height = height;
+                    screen->cursor_x = min(screen->cursor_x, width - 1);
+                    screen->cursor_y = min(screen->cursor_y, height - 1);
+                    notify_screen_buffer_size(screen);
+                }
+                LeaveCriticalSection(&console_section);
+            }
+            break;
         case WAIT_OBJECT_0:
             EnterCriticalSection( &console_section );
             status = process_console_ioctls( console );
@@ -3020,6 +3044,22 @@ int __cdecl wmain(int argc, WCHAR *argv[])
 
     for (i = 1; i < argc; i++)
     {
+        if (!wcscmp( argv[i], L"--xdg-terminal" ))
+        {
+            DWORD parent;
+            HANDLE remote;
+            if (i + 3 != argc - 1) return 1;
+            parent = wcstoul(argv[++i], &end, 10);
+            if (!parent || *end) return 1;
+            remote = ULongToHandle(wcstoul(argv[++i], &end, 10));
+            if (!remote || *end) return 1;
+            if (!attach_xdg_terminal(parent, remote, argv[++i], &console.server, &width, &height)) return 1;
+            console.is_unix = 1;
+            console.native_terminal = TRUE;
+            console.use_relative_cursor = 1;
+            headless = 1;
+            continue;
+        }
         if (!wcscmp( argv[i], L"--headless"))
         {
             headless = 1;
@@ -3068,6 +3108,14 @@ int __cdecl wmain(int argc, WCHAR *argv[])
     {
         ERR( "no server handle\n" );
         return 1;
+    }
+
+    if (!headless)
+    {
+        STARTUPINFOW si;
+        GetStartupInfoW(&si);
+        if (!(si.dwFlags & STARTF_USESHOWWINDOW && si.wShowWindow == SW_HIDE) && start_xdg_terminal(console.server))
+            return 0;
     }
 
     if (!width)  width = 80;

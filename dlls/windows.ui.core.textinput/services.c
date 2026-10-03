@@ -212,6 +212,7 @@ static HRESULT WINAPI core_text_services_manager_CreateEditContext( ICoreTextSer
 
     context->ICoreTextEditContext_iface.lpVtbl = &core_text_edit_context_vtbl;
     context->ref = 1;
+    context->thread = GetCurrentThreadId();
 
     *value = &context->ICoreTextEditContext_iface;
 

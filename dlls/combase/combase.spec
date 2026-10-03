@@ -318,7 +318,7 @@
 @ stub RoTransformError
 @ stub RoTransformErrorW
 @ stdcall RoUninitialize()
-@ stub RoUnregisterForApartmentShutdown
+@ stdcall RoUnregisterForApartmentShutdown(ptr)
 @ stub SetCleanupFlag
 @ stdcall SetErrorInfo(long ptr)
 @ stdcall SetRestrictedErrorInfo(ptr)

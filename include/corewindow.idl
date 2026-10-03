@@ -1,0 +1,10 @@
+/* CoreWindow desktop interop. LGPL-2.1-or-later. */
+import "unknwn.idl";
+import "wtypes.idl";
+
+[object, local, uuid(45d64a29-a63e-4cb6-b498-5781d298cb4f), pointer_default(unique)]
+interface ICoreWindowInterop : IUnknown
+{
+    [propget] HRESULT WindowHandle([out, retval] HWND *window);
+    [propput] HRESULT MessageHandled([in] boolean value);
+}

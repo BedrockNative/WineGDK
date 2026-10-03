@@ -37,6 +37,8 @@ import "windows.ui.viewmanagement.idl";
 
 namespace Windows.UI.Core {
     runtimeclass CoreWindow;
+    runtimeclass CoreCursor;
+    runtimeclass SystemNavigationManager;
 }
 
 namespace Windows.UI.ViewManagement {
@@ -45,3 +47,10 @@ namespace Windows.UI.ViewManagement {
     runtimeclass UIViewSettings;
     runtimeclass InputPane;
 }
+
+namespace Windows.UI.Input {
+    runtimeclass PointerVisualizationSettings;
+}
+
+namespace Windows.Devices.Input { runtimeclass MouseDevice; }
+namespace Windows.Devices.Input { runtimeclass MouseCapabilities; runtimeclass KeyboardCapabilities; runtimeclass TouchCapabilities; }

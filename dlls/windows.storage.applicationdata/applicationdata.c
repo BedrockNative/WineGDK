@@ -18,9 +18,82 @@
  */
 
 #include "private.h"
+#include "appmodel.h"
+#include "shlobj.h"
+#include "winreg.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(data);
+
+HRESULT WINAPI __wine_create_storage_folder( const WCHAR *path, IStorageFolder **out );
+
+/* Loose UWP executables may opt into package-specific storage until package
+ * registration supplies an identity. Do not give unrelated applications a
+ * shared data directory or silently infer an identity from the executable. */
+static LONG get_package_family( WCHAR *family, UINT32 count )
+{
+    WCHAR executable[MAX_PATH], key[MAX_PATH + 40], *name;
+    DWORD size = count * sizeof(*family);
+    DWORD length;
+    LONG ret;
+
+    ret = GetCurrentPackageFamilyName( &count, family );
+    if (ret == ERROR_SUCCESS) goto validate_family;
+    if (ret != APPMODEL_ERROR_NO_PACKAGE) return ret;
+
+    length = GetModuleFileNameW( NULL, executable, ARRAY_SIZE(executable) );
+    if (!length || length >= ARRAY_SIZE(executable))
+        return APPMODEL_ERROR_NO_PACKAGE;
+    name = wcsrchr( executable, '\\' );
+    name = name ? name + 1 : executable;
+    swprintf( key, ARRAY_SIZE(key), L"Software\\Wine\\AppDefaults\\%s", name );
+    ret = RegGetValueW( HKEY_CURRENT_USER, key, L"PackageFamilyName", RRF_RT_REG_SZ,
+                       NULL, family, &size );
+    if (ret == ERROR_FILE_NOT_FOUND || ret == ERROR_PATH_NOT_FOUND) return APPMODEL_ERROR_NO_PACKAGE;
+    if (ret) return ret;
+
+validate_family:
+    /* A package family is a single path component. Reject malformed overrides,
+     * including identities returned by the host package API. */
+    if (!*family || !wcschr( family, '_' )) return ERROR_INVALID_NAME;
+    for (name = family; *name; ++name)
+        if (!((*name >= 'a' && *name <= 'z') || (*name >= 'A' && *name <= 'Z') ||
+              (*name >= '0' && *name <= '9') || *name == '.' || *name == '-' || *name == '_'))
+            return ERROR_INVALID_NAME;
+    return ERROR_SUCCESS;
+}
+
+static HRESULT get_data_folder( const WCHAR *name, IStorageFolder **value )
+{
+    WCHAR family[PACKAGE_FAMILY_NAME_MAX_LENGTH + 1], *root, *path;
+    SIZE_T count;
+    HRESULT hr;
+    LONG ret;
+
+    if (!value) return E_POINTER;
+    *value = NULL;
+    ret = get_package_family( family, ARRAY_SIZE(family) );
+    if (ret) return HRESULT_FROM_WIN32( ret );
+    hr = SHGetKnownFolderPath( &FOLDERID_LocalAppData, KF_FLAG_CREATE, NULL, &root );
+    if (FAILED(hr)) return hr;
+
+    count = wcslen(root) + wcslen(family) + wcslen(name) + ARRAY_SIZE(L"\\Packages\\\\");
+    path = malloc( count * sizeof(*path) );
+    if (!path)
+    {
+        CoTaskMemFree( root );
+        return E_OUTOFMEMORY;
+    }
+    swprintf( path, count, L"%s\\Packages\\%s\\%s", root, family, name );
+    CoTaskMemFree( root );
+
+    ret = SHCreateDirectoryExW( NULL, path, NULL );
+    if (ret == ERROR_ALREADY_EXISTS) ret = ERROR_SUCCESS;
+    hr = ret ? HRESULT_FROM_WIN32(ret) : __wine_create_storage_folder( path, value );
+    TRACE( "%s: %#lx\n", debugstr_w(path), hr );
+    free( path );
+    return hr;
+}
 
 struct application_data_statics
 {
@@ -118,6 +191,7 @@ static const struct IActivationFactoryVtbl factory_vtbl =
 struct application_data
 {
     IApplicationData IApplicationData_iface;
+    IApplicationData2 IApplicationData2_iface;
     LONG ref;
 };
 
@@ -139,6 +213,13 @@ static HRESULT WINAPI application_data_QueryInterface( IApplicationData *iface, 
     {
         *out = &impl->IApplicationData_iface;
         IInspectable_AddRef( *out );
+        return S_OK;
+    }
+
+    if (IsEqualGUID(iid,&IID_IApplicationData2))
+    {
+        *out=&impl->IApplicationData2_iface;
+        IApplicationData_AddRef(iface);
         return S_OK;
     }
 
@@ -223,20 +304,20 @@ static HRESULT WINAPI application_data_get_RoamingSettings( IApplicationData *if
 
 static HRESULT WINAPI application_data_get_LocalFolder( IApplicationData *iface, IStorageFolder **value )
 {
-    FIXME( "iface %p, value %p stub!\n", iface, value );
-    return E_NOTIMPL;
+    TRACE( "iface %p, value %p\n", iface, value );
+    return get_data_folder( L"LocalState", value );
 }
 
 static HRESULT WINAPI application_data_get_RoamingFolder( IApplicationData *iface, IStorageFolder **value )
 {
-    FIXME( "iface %p, value %p stub!\n", iface, value );
-    return E_NOTIMPL;
+    TRACE( "iface %p, value %p\n", iface, value );
+    return get_data_folder( L"RoamingState", value );
 }
 
 static HRESULT WINAPI application_data_get_TemporaryFolder( IApplicationData *iface, IStorageFolder **value )
 {
-    FIXME( "iface %p, value %p stub!\n", iface, value );
-    return E_NOTIMPL;
+    TRACE( "iface %p, value %p\n", iface, value );
+    return get_data_folder( L"TempState", value );
 }
 
 static HRESULT WINAPI application_data_add_DataChanged( IApplicationData *iface, ITypedEventHandler_ApplicationData_IInspectable *handler,
@@ -291,6 +372,13 @@ static const struct IApplicationDataVtbl application_data_vtbl =
 
 DEFINE_IINSPECTABLE( application_data_statics, IApplicationDataStatics, struct application_data_statics, IActivationFactory_iface )
 
+DEFINE_IINSPECTABLE(application_data2,IApplicationData2,struct application_data,IApplicationData_iface)
+static HRESULT WINAPI application_data2_get_LocalCacheFolder(IApplicationData2 *iface, IStorageFolder **value)
+{ return get_data_folder(L"LocalCache",value); }
+static const IApplicationData2Vtbl application_data2_vtbl={application_data2_QueryInterface,application_data2_AddRef,
+    application_data2_Release,application_data2_GetIids,application_data2_GetRuntimeClassName,application_data2_GetTrustLevel,
+    application_data2_get_LocalCacheFolder};
+
 static HRESULT WINAPI application_data_statics_get_Current( IApplicationDataStatics *iface, IApplicationData **value )
 {
     struct application_data *impl;
@@ -301,6 +389,7 @@ static HRESULT WINAPI application_data_statics_get_Current( IApplicationDataStat
     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
 
     impl->IApplicationData_iface.lpVtbl = &application_data_vtbl;
+    impl->IApplicationData2_iface.lpVtbl = &application_data2_vtbl;
     impl->ref = 1;
 
     *value = &impl->IApplicationData_iface;

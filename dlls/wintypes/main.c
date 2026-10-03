@@ -18,6 +18,7 @@
 
 #include "initguid.h"
 #include "private.h"
+#include "roapi.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(wintypes);
 
@@ -145,12 +146,26 @@ DEFINE_IINSPECTABLE(api_information_statics, IApiInformationStatics, struct api_
 static HRESULT STDMETHODCALLTYPE api_information_statics_IsTypePresent(
         IApiInformationStatics *iface, HSTRING type_name, BOOLEAN *value)
 {
-    FIXME("iface %p, type_name %s, value %p stub!\n", iface, debugstr_hstring(type_name), value);
+    IActivationFactory *factory;
+    HRESULT hr;
+    TRACE("iface %p, type_name %s, value %p.\n", iface, debugstr_hstring(type_name), value);
 
-    if (!type_name)
+    if (!type_name || !WindowsGetStringLen(type_name))
         return E_INVALIDARG;
-
-    return E_NOTIMPL;
+    if (!value) return E_POINTER;
+    *value = FALSE;
+    /* Registered runtime classes can be queried without assuming that every
+     * type in the advertised UniversalApiContract is implemented. Non-activatable
+     * metadata-only types still need a metadata catalog. */
+    hr = RoGetActivationFactory(type_name, &IID_IActivationFactory, (void **)&factory);
+    if (SUCCEEDED(hr))
+    {
+        *value = TRUE;
+        IActivationFactory_Release(factory);
+        return S_OK;
+    }
+    if (hr == REGDB_E_CLASSNOTREG || hr == CLASS_E_CLASSNOTAVAILABLE) return S_OK;
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE api_information_statics_IsMethodPresent(
@@ -192,41 +207,75 @@ static HRESULT STDMETHODCALLTYPE api_information_statics_IsEventPresent(
     return E_NOTIMPL;
 }
 
+/* Properties currently exposed by Wine's window/display implementations.
+ * Unknown metadata is reported absent until a metadata reader is available. */
+static unsigned int api_property_access(HSTRING type_name, HSTRING property_name)
+{
+    static const struct { const WCHAR *type, *name; unsigned int access; } properties[] =
+    {
+        {L"Windows.UI.Core.CoreWindow",L"Bounds",1},
+        {L"Windows.UI.Core.CoreWindow",L"CustomProperties",1},
+        {L"Windows.UI.Core.CoreWindow",L"Dispatcher",1},
+        {L"Windows.UI.Core.CoreWindow",L"FlowDirection",3},
+        {L"Windows.UI.Core.CoreWindow",L"IsInputEnabled",3},
+        {L"Windows.UI.Core.CoreWindow",L"PointerPosition",3},
+        {L"Windows.UI.Core.CoreWindow",L"Visible",1},
+        {L"Windows.Graphics.Display.DisplayInformation",L"CurrentOrientation",1},
+        {L"Windows.Graphics.Display.DisplayInformation",L"NativeOrientation",1},
+        {L"Windows.Graphics.Display.DisplayInformation",L"LogicalDpi",1},
+        {L"Windows.Graphics.Display.DisplayInformation",L"ResolutionScale",1},
+        {L"Windows.Graphics.Display.DisplayInformation",L"RawPixelsPerViewPixel",1},
+        {L"Windows.Graphics.Display.DisplayInformation",L"ScreenWidthInRawPixels",1},
+        {L"Windows.Graphics.Display.DisplayInformation",L"ScreenHeightInRawPixels",1},
+    };
+    unsigned int i;
+    for (i=0;i<ARRAY_SIZE(properties);++i)
+        if (!wcscmp(WindowsGetStringRawBuffer(type_name,NULL),properties[i].type) &&
+            !wcscmp(WindowsGetStringRawBuffer(property_name,NULL),properties[i].name)) return properties[i].access;
+    return 0;
+}
+
 static HRESULT STDMETHODCALLTYPE api_information_statics_IsPropertyPresent(
         IApiInformationStatics *iface, HSTRING type_name, HSTRING property_name, BOOLEAN *value)
 {
-    FIXME("iface %p, type_name %s, property_name %s, value %p stub!\n", iface,
+    FIXME("iface %p, type_name %s, property_name %s, value %p semi-stub.\n", iface,
             debugstr_hstring(type_name), debugstr_hstring(property_name), value);
 
-    if (!type_name)
+    if (!type_name || !property_name)
         return E_INVALIDARG;
 
-    return E_NOTIMPL;
+    if (!value) return E_POINTER;
+    *value=api_property_access(type_name,property_name)!=0;
+    return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE api_information_statics_IsReadOnlyPropertyPresent(
         IApiInformationStatics *iface, HSTRING type_name, HSTRING property_name,
         BOOLEAN *value)
 {
-    FIXME("iface %p, type_name %s, property_name %s, value %p stub!\n", iface,
+    FIXME("iface %p, type_name %s, property_name %s, value %p semi-stub.\n", iface,
             debugstr_hstring(type_name), debugstr_hstring(property_name), value);
 
-    if (!type_name)
+    if (!type_name || !property_name)
         return E_INVALIDARG;
 
-    return E_NOTIMPL;
+    if (!value) return E_POINTER;
+    *value=api_property_access(type_name,property_name)==1;
+    return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE api_information_statics_IsWriteablePropertyPresent(
         IApiInformationStatics *iface, HSTRING type_name, HSTRING property_name, BOOLEAN *value)
 {
-    FIXME("iface %p, type_name %s, property_name %s, value %p stub!\n", iface,
+    FIXME("iface %p, type_name %s, property_name %s, value %p semi-stub.\n", iface,
             debugstr_hstring(type_name), debugstr_hstring(property_name), value);
 
-    if (!type_name)
+    if (!type_name || !property_name)
         return E_INVALIDARG;
 
-    return E_NOTIMPL;
+    if (!value) return E_POINTER;
+    *value=!!(api_property_access(type_name,property_name)&2);
+    return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE api_information_statics_IsEnumNamedValuePresent(
@@ -258,13 +307,21 @@ static HRESULT STDMETHODCALLTYPE api_information_statics_IsApiContractPresentByM
         IApiInformationStatics *iface, HSTRING contract_name, UINT16 major_version,
         UINT16 minor_version, BOOLEAN *value)
 {
-    FIXME("iface %p, contract_name %s, major_version %u, minor_version %u, value %p stub!\n", iface,
-            debugstr_hstring(contract_name), major_version, minor_version, value);
-
-    if (!contract_name)
-        return E_INVALIDARG;
-
-    return E_NOTIMPL;
+    const WCHAR *name;
+    unsigned int i;
+    TRACE("contract %s, version %u.%u\n", debugstr_hstring(contract_name), major_version, minor_version);
+    if (!contract_name) return E_INVALIDARG;
+    if (!value) return E_POINTER;
+    *value=FALSE;
+    name=WindowsGetStringRawBuffer(contract_name,NULL);
+    for (i=0;i<ARRAY_SIZE(present_contracts);++i)
+        if (!wcsicmp(name,present_contracts[i].name))
+        {
+            *value=major_version<present_contracts[i].max_major ||
+                   (major_version==present_contracts[i].max_major && !minor_version);
+            break;
+        }
+    return S_OK;
 }
 
 static const struct IApiInformationStaticsVtbl api_information_statics_vtbl =
@@ -1790,7 +1847,15 @@ HRESULT WINAPI DllGetActivationFactory(HSTRING classid, IActivationFactory **fac
 
     *factory = NULL;
 
-    if (!wcscmp(buffer, L"Windows.Foundation.Metadata.ApiInformation"))
+    if (!wcscmp(buffer,L"Windows.Foundation.Diagnostics.LoggingFields"))
+        IActivationFactory_AddRef((*factory=logging_fields_factory));
+    else if (!wcscmp(buffer,L"Windows.Foundation.Diagnostics.LoggingChannel"))
+        IActivationFactory_AddRef((*factory=logging_channel_factory));
+    else if (!wcscmp(buffer,L"Windows.Foundation.Diagnostics.LoggingOptions"))
+        IActivationFactory_AddRef((*factory=logging_options_factory));
+    else if (!wcscmp(buffer,L"Windows.Foundation.Diagnostics.LoggingChannelOptions"))
+        IActivationFactory_AddRef((*factory=logging_channel_options_factory));
+    else if (!wcscmp(buffer, L"Windows.Foundation.Metadata.ApiInformation"))
         IActivationFactory_AddRef((*factory = &api_information_statics.IActivationFactory_iface));
     if (!wcscmp(buffer, L"Windows.Foundation.PropertyValue"))
         IActivationFactory_AddRef((*factory = &property_value_statics.IActivationFactory_iface));

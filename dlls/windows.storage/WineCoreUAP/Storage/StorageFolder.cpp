@@ -20,6 +20,7 @@
 #include <atomic>
 #include <mutex>
 #include <cwchar>
+#include <new>
 
 #include "../../private.h"
 #include "provider.h"
@@ -83,6 +84,11 @@ public:
         item->AddRef();
         this->item = item;
         this->canBeModified = canBeModified;
+    }
+
+    ~StorageFolder()
+    {
+        if (item) item->Release();
     }
 
     /* IUnknown Methods (Shared) */
@@ -368,8 +374,24 @@ _CLEANUP:
     HRESULT WINAPI
     CreateFileAsync( HSTRING name, CreationCollisionOption option, IAsyncOperation<StorageFile *> **operation ) noexcept override
     {
-        FIXME( "iface %p, name %s, option %d, operation %p stub!\n", this, debugstr_hstring(name), (INT)option, operation );
-        return E_NOTIMPL;
+        const WCHAR *str = WindowsGetStringRawBuffer(name, nullptr);
+        UINT32 length = WindowsGetStringLen(name);
+        CreateFileOptions *options;
+        HRESULT hr;
+        if (!operation) return E_POINTER;
+        *operation = nullptr;
+        if (!length || wcslen(str) != length || str[length - 1] == '.' || str[length - 1] == ' ' ||
+            wcspbrk(str, L"\\/:*?\"<>|")) return E_INVALIDARG;
+        for (UINT32 i = 0; i < length; ++i) if (str[i] < 32) return E_INVALIDARG;
+        if (option < CreationCollisionOption::GenerateUniqueName || option > CreationCollisionOption::OpenIfExists)
+            return E_INVALIDARG;
+        if (!(options = new (std::nothrow) CreateFileOptions())) return E_OUTOFMEMORY;
+        options->option = option;
+        if (FAILED(hr = WindowsDuplicateString(name, &options->name))) { delete options; return hr; }
+        hr = AsyncOperation::Inspectable::Create(static_cast<IStorageFolder *>(this), options, CreateLocalFile,
+            {.operation = &__uuidof(IAsyncOperation<StorageFile *>)}, (IAsyncOperation<IInspectable *> **)operation);
+        if (FAILED(hr)) { WindowsDeleteString(options->name); delete options; }
+        return hr;
     }
 
     HRESULT WINAPI
@@ -441,6 +463,60 @@ protected:
     };
 
 private:
+    struct CreateFileOptions { HSTRING name; CreationCollisionOption option; };
+    static HRESULT WINAPI CreateLocalFile(IUnknown *invoker, PVOID param, PROPVARIANT *result)
+    {
+        auto *impl = static_cast<StorageFolder *>(static_cast<IStorageFolder *>(invoker));
+        auto *options = static_cast<CreateFileOptions *>(param);
+        typedef HRESULT (__cdecl *create_file_fn)(const WCHAR *, IUnknown **);
+        static std::once_flag once;
+        static create_file_fn create_file;
+        HSTRING folder = nullptr;
+        HANDLE handle = INVALID_HANDLE_VALUE;
+        IUnknown *file = nullptr;
+        WCHAR *path = nullptr;
+        const WCHAR *name = WindowsGetStringRawBuffer(options->name, nullptr), *extension = wcsrchr(name, '.');
+        DWORD disposition = CREATE_NEW;
+        size_t capacity;
+        HRESULT hr = impl->get_Path(&folder);
+        if (FAILED(hr)) goto done;
+        /* Resolve the factory before creating or replacing the destination. */
+        std::call_once(once, [] {
+            HMODULE module = LoadLibraryW(L"microsoft.windows.storage.pickers.dll");
+            if (module) create_file = reinterpret_cast<create_file_fn>(GetProcAddress(module, "__wine_create_storage_file"));
+        });
+        if (!create_file) { hr = E_NOTIMPL; goto done; }
+        capacity = (size_t)WindowsGetStringLen(folder) + wcslen(name) + 32;
+        if (capacity > 32768) { hr = HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE); goto done; }
+        if (!(path = static_cast<WCHAR *>(malloc(capacity * sizeof(WCHAR))))) { hr = E_OUTOFMEMORY; goto done; }
+        if (options->option == CreationCollisionOption::ReplaceExisting) disposition = CREATE_ALWAYS;
+        else if (options->option == CreationCollisionOption::OpenIfExists) disposition = OPEN_ALWAYS;
+        if (!extension || extension == name) extension = name + wcslen(name);
+        for (unsigned index = 1; index <= 10000; ++index)
+        {
+            if (index == 1) swprintf(path, capacity, L"%s\\%s", WindowsGetStringRawBuffer(folder, nullptr), name);
+            else swprintf(path, capacity, L"%s\\%.*s (%u)%s", WindowsGetStringRawBuffer(folder, nullptr),
+                (int)(extension - name), name, index, extension);
+            handle = CreateFileW(path, disposition == OPEN_ALWAYS ? FILE_READ_ATTRIBUTES : GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr, disposition, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (handle != INVALID_HANDLE_VALUE) break;
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            if (options->option != CreationCollisionOption::GenerateUniqueName ||
+                (hr != HRESULT_FROM_WIN32(ERROR_FILE_EXISTS) && hr != HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS))) goto done;
+        }
+        if (handle == INVALID_HANDLE_VALUE) goto done;
+        CloseHandle(handle);
+        hr = create_file(path, &file);
+        if (SUCCEEDED(hr)) { result->vt = VT_UNKNOWN; result->punkVal = file; }
+    done:
+        free(path);
+        WindowsDeleteString(folder);
+        WindowsDeleteString(options->name);
+        delete options;
+        return hr;
+    }
+
     static HRESULT WINAPI
     Rename( IUnknown *invoker, PVOID param, PROPVARIANT *result )
     {
@@ -563,9 +639,34 @@ _CLEANUP:
 
     std::atomic_long ref{ 1 };
     
-    IShellItem *item;
+    IShellItem *item = nullptr;
     BOOLEAN canBeModified;
 };
+
+/* Internal synchronous entry point used by ApplicationData's folder properties. */
+extern "C" HRESULT WINAPI __wine_create_storage_folder( const WCHAR *path, IStorageFolder **out )
+{
+    IShellItem *item;
+    StorageFolder *folder;
+    DWORD attributes;
+    HRESULT hr;
+
+    if (!out) return E_POINTER;
+    *out = nullptr;
+    if (!path || !*path) return E_INVALIDARG;
+
+    attributes = GetFileAttributesW( path );
+    if (attributes == INVALID_FILE_ATTRIBUTES) return HRESULT_FROM_WIN32( GetLastError() );
+    if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) return HRESULT_FROM_WIN32( ERROR_DIRECTORY );
+
+    hr = SHCreateItemFromParsingName( path, nullptr, IID_PPV_ARGS(&item) );
+    if (FAILED(hr)) return hr;
+    folder = new (std::nothrow) StorageFolder( item );
+    item->Release();
+    if (!folder) return E_OUTOFMEMORY;
+    *out = folder;
+    return S_OK;
+}
 
 class StorageFolderImpl final
     : public IActivationFactory
@@ -682,12 +783,16 @@ public:
         if ( !path ) return E_INVALIDARG;
         if ( !result ) return E_POINTER;
 
-        options = new StorageFolderImpl_GetFolderFromPathOptions();
-        options->path = path;
+        *result = nullptr;
+        options = new (std::nothrow) StorageFolderImpl_GetFolderFromPathOptions();
+        if (!options) return E_OUTOFMEMORY;
+        hr = WindowsDuplicateString(path, &options->path);
+        if (FAILED(hr)) { delete options; return hr; }
         
 
         hr = AsyncOperation::Inspectable::Create( reinterpret_cast<IUnknown *>(this), 
             static_cast<PVOID>(options), GetFolderFromPath, { .operation = &__uuidof( IAsyncOperation<StorageFolder *> ) }, (IAsyncOperation<IInspectable *> **)result );
+        if (FAILED(hr)) { WindowsDeleteString(options->path); delete options; }
         TRACE( "created IAsyncOperation_StorageFolder %p.\n", *result );
 
         return hr;
@@ -703,24 +808,17 @@ private:
     static HRESULT WINAPI
     GetFolderFromPath( IUnknown *invoker, PVOID param, PROPVARIANT *result )
     {
-        HRESULT hr;
-        IShellItem *folderItem;
-        StorageFolder *folder;
-
         auto *options = static_cast<StorageFolderImpl_GetFolderFromPathOptions *>(param);
-
-        TRACE( "invoker %p, param %p, result %p\n", invoker, param, result );
-
-        hr = SHCreateItemFromParsingName( WindowsGetStringRawBuffer( options->path, nullptr), nullptr, IID_PPV_ARGS(&folderItem) );
-        if ( FAILED( hr ) ) goto _CLEANUP;
-
-        folder = new StorageFolder( folderItem );
-        
-        result->punkVal = reinterpret_cast<IUnknown *>( folder );
-
-_CLEANUP:
+        IStorageFolder *folder = nullptr;
+        HRESULT hr = __wine_create_storage_folder(WindowsGetStringRawBuffer(options->path, nullptr), &folder);
+        if (SUCCEEDED(hr))
+        {
+            result->vt = VT_UNKNOWN;
+            result->punkVal = static_cast<IUnknown *>(folder);
+        }
+        WindowsDeleteString(options->path);
         delete options;
-        return S_OK;
+        return hr;
     }
 
     std::atomic_long ref{ 1 };

@@ -93,3 +93,10 @@ extern IActivationFactory *property_set_factory;
     DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from_##iface_type, iface_type##_iface, &impl->base_iface )
 #define DEFINE_IINSPECTABLE_OUTER( pfx, iface_type, impl_type, outer_iface )                       \
     DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from_##iface_type, iface_type##_iface, impl->outer_iface )
+
+#define WIDL_using_Windows_Foundation_Diagnostics
+#include "windows.foundation.diagnostics.h"
+extern IActivationFactory *logging_channel_factory,*logging_channel_options_factory;
+
+extern IActivationFactory *logging_options_factory;
+extern IActivationFactory *logging_fields_factory;

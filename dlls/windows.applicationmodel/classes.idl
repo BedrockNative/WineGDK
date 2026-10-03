@@ -30,3 +30,12 @@ namespace Windows.ApplicationModel {
     runtimeclass Package;
     runtimeclass DesignMode;
 }
+
+import "windows.applicationmodel.store.idl";
+namespace Windows.ApplicationModel.Store { runtimeclass CurrentApp; }
+
+import "windows.applicationmodel.resources.core.idl";
+namespace Windows.ApplicationModel.Resources.Core { runtimeclass ResourceContext; }
+
+import "windows.applicationmodel.extendedexecution.idl";
+namespace Windows.ApplicationModel.ExtendedExecution { runtimeclass ExtendedExecutionSession; }

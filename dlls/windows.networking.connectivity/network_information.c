@@ -237,10 +237,58 @@ static HRESULT WINAPI connection_profile_GetNetworkNames( IConnectionProfile *if
     return E_NOTIMPL;
 }
 
+struct connection_cost { IConnectionCost iface; LONG ref; DWORD flags; };
+static HRESULT WINAPI cost_QueryInterface(IConnectionCost *iface, REFIID iid, void **out)
+{
+    if (!out) return E_POINTER;
+    *out=NULL;
+    if (!IsEqualGUID(iid,&IID_IUnknown) && !IsEqualGUID(iid,&IID_IInspectable) && !IsEqualGUID(iid,&IID_IAgileObject) && !IsEqualGUID(iid,&IID_IConnectionCost)) return E_NOINTERFACE;
+    *out=iface; IConnectionCost_AddRef(iface); return S_OK;
+}
+static ULONG WINAPI cost_AddRef(IConnectionCost *iface) { return InterlockedIncrement(&((struct connection_cost *)iface)->ref); }
+static ULONG WINAPI cost_Release(IConnectionCost *iface) { ULONG ref=InterlockedDecrement(&((struct connection_cost *)iface)->ref); if (!ref) free(iface); return ref; }
+static HRESULT WINAPI cost_GetIids(IConnectionCost *iface, ULONG *count, IID **iids)
+{
+    if (!count || !iids) return E_POINTER;
+    *count=0; if (!(*iids=CoTaskMemAlloc(sizeof(**iids)))) return E_OUTOFMEMORY;
+    **iids=IID_IConnectionCost; *count=1; return S_OK;
+}
+static HRESULT WINAPI cost_GetRuntimeClassName(IConnectionCost *iface, HSTRING *name)
+{ const WCHAR *str=RuntimeClass_Windows_Networking_Connectivity_ConnectionCost; return WindowsCreateString(str,wcslen(str),name); }
+static HRESULT WINAPI cost_GetTrustLevel(IConnectionCost *iface, TrustLevel *trust)
+{ if (!trust) return E_POINTER; *trust=BaseTrust; return S_OK; }
+static HRESULT WINAPI cost_get_NetworkCostType(IConnectionCost *iface, NetworkCostType *value)
+{
+    DWORD flags=((struct connection_cost *)iface)->flags;
+    if (!value) return E_POINTER;
+    *value=flags & NLM_CONNECTION_COST_UNRESTRICTED ? NetworkCostType_Unrestricted :
+           flags & NLM_CONNECTION_COST_FIXED ? NetworkCostType_Fixed :
+           flags & NLM_CONNECTION_COST_VARIABLE ? NetworkCostType_Variable : NetworkCostType_Unknown;
+    return S_OK;
+}
+static HRESULT WINAPI cost_get_Roaming(IConnectionCost *iface, boolean *value)
+{ if (!value) return E_POINTER; *value=!!(((struct connection_cost *)iface)->flags & NLM_CONNECTION_COST_ROAMING); return S_OK; }
+static HRESULT WINAPI cost_get_OverDataLimit(IConnectionCost *iface, boolean *value)
+{ if (!value) return E_POINTER; *value=!!(((struct connection_cost *)iface)->flags & NLM_CONNECTION_COST_OVERDATALIMIT); return S_OK; }
+static HRESULT WINAPI cost_get_ApproachingDataLimit(IConnectionCost *iface, boolean *value)
+{ if (!value) return E_POINTER; *value=!!(((struct connection_cost *)iface)->flags & NLM_CONNECTION_COST_APPROACHINGDATALIMIT); return S_OK; }
+static const IConnectionCostVtbl cost_vtbl={cost_QueryInterface,cost_AddRef,cost_Release,cost_GetIids,cost_GetRuntimeClassName,cost_GetTrustLevel,
+    cost_get_NetworkCostType,cost_get_Roaming,cost_get_OverDataLimit,cost_get_ApproachingDataLimit};
+
 static HRESULT WINAPI connection_profile_GetConnectionCost( IConnectionProfile *iface, IConnectionCost **value )
 {
-    FIXME( "iface %p, value %p stub!\n", iface, value );
-    return E_NOTIMPL;
+    struct connection_profile *profile=impl_from_IConnectionProfile(iface);
+    struct connection_cost *impl;
+    INetworkCostManager *manager;
+    HRESULT hr;
+    if (!value) return E_POINTER;
+    *value=NULL;
+    if (FAILED(hr=INetworkListManager_QueryInterface(profile->network_list_manager,&IID_INetworkCostManager,(void **)&manager))) return hr;
+    if (!(impl=calloc(1,sizeof(*impl)))) { INetworkCostManager_Release(manager); return E_OUTOFMEMORY; }
+    hr=INetworkCostManager_GetCost(manager,&impl->flags,NULL);
+    INetworkCostManager_Release(manager);
+    if (FAILED(hr)) { free(impl); return hr; }
+    impl->iface.lpVtbl=&cost_vtbl; impl->ref=1; *value=&impl->iface; return S_OK;
 }
 
 static HRESULT WINAPI connection_profile_GetDataPlanStatus( IConnectionProfile *iface, IDataPlanStatus **value )

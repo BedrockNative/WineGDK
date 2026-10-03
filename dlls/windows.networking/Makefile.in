@@ -1,5 +1,10 @@
 MODULE = windows.networking.dll
-IMPORTS = combase
+IMPORTS = combase winhttp propsys uuid
 
 SOURCES = \
-	main.c
+    async.c \
+    async_private.idl \
+    classes.idl \
+    main.c \
+    vector.c \
+    websocket.c

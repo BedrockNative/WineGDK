@@ -78,4 +78,16 @@ extern IActivationFactory *ticket_factory;
 #define DEFINE_IINSPECTABLE( pfx, iface_type, impl_type, base_iface )                              \
     DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from_##iface_type, iface_type##_iface, &impl->base_iface )
 
+#define DEFINE_IINSPECTABLE_OUTER(pfx,iface_type,impl_type,outer_iface) \
+    DEFINE_IINSPECTABLE_(pfx,iface_type,impl_type,impl_from_##iface_type,iface_type##_iface,impl->outer_iface)
+#define WIDL_using_Windows_Security_Credentials
+#define WIDL_using_Windows_Security_Authentication_Web_Core
+#include "windows.security.authentication.web.core.h"
+#include "async_private.h"
+struct vector_iids { const GUID *vector, *view, *iterable, *iterator; };
+extern HRESULT vector_create(const struct vector_iids *iids, void **out);
+extern HRESULT async_operation_inspectable_create(const GUID *, IUnknown *, IUnknown *, async_operation_callback, IAsyncOperation_IInspectable **);
+extern HRESULT async_action_create(IUnknown *, async_operation_callback, IAsyncAction **);
+extern HRESULT string_map_create(IMap_HSTRING_HSTRING **out);
+extern IActivationFactory *webcore_factory, *webrequest_factory;
 #endif

@@ -50,9 +50,26 @@ HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **fa
     if (!wcscmp( buffer, RuntimeClass_Windows_UI_ViewManagement_InputPane ))
         IActivationFactory_QueryInterface( inputpane_factory, &IID_IActivationFactory, (void **)factory );
 
+    if (!wcscmp(buffer, RuntimeClass_Windows_UI_Core_CoreCursor))
+        IActivationFactory_QueryInterface(corecursor_factory, &IID_IActivationFactory, (void **)factory);
+
     if (!wcscmp( buffer, RuntimeClass_Windows_UI_Core_CoreWindow ))
         IActivationFactory_QueryInterface( corewindow_factory, &IID_IActivationFactory, (void **)factory );
 
+    if (!wcscmp( buffer, RuntimeClass_Windows_UI_Core_SystemNavigationManager ))
+        IActivationFactory_QueryInterface( navigation_factory, &IID_IActivationFactory, (void **)factory );
+
+    if (!wcscmp( buffer, RuntimeClass_Windows_UI_Input_PointerVisualizationSettings ))
+        IActivationFactory_QueryInterface( pointervisualization_factory, &IID_IActivationFactory, (void **)factory );
+
+    if (!wcscmp(buffer, RuntimeClass_Windows_Devices_Input_MouseDevice))
+        IActivationFactory_QueryInterface(mouse_factory, &IID_IActivationFactory, (void **)factory);
+    if (!wcscmp(buffer, RuntimeClass_Windows_Devices_Input_MouseCapabilities))
+        IActivationFactory_QueryInterface(mousecapabilities_factory,&IID_IActivationFactory,(void **)factory);
+    if (!wcscmp(buffer, RuntimeClass_Windows_Devices_Input_KeyboardCapabilities))
+        IActivationFactory_QueryInterface(keyboardcapabilities_factory,&IID_IActivationFactory,(void **)factory);
+    if (!wcscmp(buffer, RuntimeClass_Windows_Devices_Input_TouchCapabilities))
+        IActivationFactory_QueryInterface(touchcapabilities_factory,&IID_IActivationFactory,(void **)factory);
     if (*factory) return S_OK;
     return CLASS_E_CLASSNOTAVAILABLE;
 }

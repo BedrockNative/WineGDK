@@ -365,3 +365,138 @@ HRESULT async( IUnknown *invoker, IUnknown *param, PROPVARIANT *result, BOOL cal
 
     return S_OK;
 }
+struct device_information_update
+{
+    IDeviceInformationUpdate IDeviceInformationUpdate_iface;
+    LONG ref;
+
+    IMap_HSTRING_IInspectable *properties;
+    HSTRING id;
+};
+
+static inline struct device_information_update *impl_from_IDeviceInformationUpdate( IDeviceInformationUpdate *iface )
+{
+    return CONTAINING_RECORD( iface, struct device_information_update, IDeviceInformationUpdate_iface );
+}
+
+static HRESULT WINAPI device_information_update_QueryInterface( IDeviceInformationUpdate *iface, REFIID iid, void **out )
+{
+    TRACE( "iface %p, iid %s, out %p\n", iface, debugstr_guid( iid ), out );
+
+    if (IsEqualGUID( iid, &IID_IUnknown ) ||
+        IsEqualGUID( iid, &IID_IInspectable ) ||
+        IsEqualGUID( iid, &IID_IAgileObject ) ||
+        IsEqualGUID( iid, &IID_IDeviceInformationUpdate ))
+    {
+        IUnknown_AddRef( iface );
+        *out = iface;
+        return S_OK;
+    }
+
+    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI device_information_update_AddRef( IDeviceInformationUpdate *iface )
+{
+    struct device_information_update *impl = impl_from_IDeviceInformationUpdate( iface );
+    ULONG ref = InterlockedIncrement( &impl->ref );
+    TRACE( "iface %p, ref %lu.\n", iface, ref );
+    return ref;
+}
+
+static ULONG WINAPI device_information_update_Release( IDeviceInformationUpdate *iface )
+{
+    struct device_information_update *impl = impl_from_IDeviceInformationUpdate( iface );
+    ULONG ref = InterlockedDecrement( &impl->ref );
+
+    TRACE( "iface %p, ref %lu.\n", iface, ref );
+
+    if (!ref)
+    {
+        if (impl->properties) IMap_HSTRING_IInspectable_Release( impl->properties );
+        WindowsDeleteString( impl->id );
+        free( impl );
+    }
+
+    return ref;
+}
+
+static HRESULT WINAPI device_information_update_GetIids( IDeviceInformationUpdate *iface, ULONG *iid_count, IID **iids )
+{
+    if (!iid_count || !iids) return E_POINTER;
+    *iid_count = 0;
+    if (!(*iids = CoTaskMemAlloc( sizeof(**iids) ))) return E_OUTOFMEMORY;
+    **iids = IID_IDeviceInformationUpdate;
+    *iid_count = 1;
+    return S_OK;
+}
+
+static HRESULT WINAPI device_information_update_GetRuntimeClassName( IDeviceInformationUpdate *iface, HSTRING *class_name )
+{
+    const static WCHAR *name = RuntimeClass_Windows_Devices_Enumeration_DeviceInformationUpdate;
+    TRACE( "iface %p, class_name %p\n", iface, class_name );
+    return WindowsCreateString( name, wcslen( name ), class_name );
+}
+
+static HRESULT WINAPI device_information_update_GetTrustLevel( IDeviceInformationUpdate *iface, TrustLevel *trust_level )
+{
+    if (!trust_level) return E_POINTER;
+    *trust_level = BaseTrust;
+    return S_OK;
+}
+
+static HRESULT WINAPI device_information_update_get_Id( IDeviceInformationUpdate *iface, HSTRING *id )
+{
+    struct device_information_update *impl = impl_from_IDeviceInformationUpdate( iface );
+    TRACE( "iface %p, id %p\n", iface, id );
+    return WindowsDuplicateString( impl->id, id );
+}
+
+static HRESULT WINAPI device_information_update_get_Properties( IDeviceInformationUpdate *iface, IMapView_HSTRING_IInspectable **properties )
+{
+    struct device_information_update *impl = impl_from_IDeviceInformationUpdate( iface );
+    TRACE( "iface %p, properties %p.\n", iface, properties );
+    return IMap_HSTRING_IInspectable_GetView( impl->properties, properties );
+}
+
+static const IDeviceInformationUpdateVtbl device_information_update_vtbl =
+{
+    device_information_update_QueryInterface,
+    device_information_update_AddRef,
+    device_information_update_Release,
+    device_information_update_GetIids,
+    device_information_update_GetRuntimeClassName,
+    device_information_update_GetTrustLevel,
+    device_information_update_get_Id,
+    device_information_update_get_Properties,
+};
+
+HRESULT device_information_update_create( const DEV_OBJECT *obj, IDeviceInformationUpdate **info )
+{
+    struct device_information_update *impl;
+    HRESULT hr;
+
+    TRACE( "obj %s, info %p\n", debugstr_DEV_OBJECT( obj ), info );
+
+    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+    impl->IDeviceInformationUpdate_iface.lpVtbl = &device_information_update_vtbl;
+    impl->ref = 1;
+    if (FAILED(hr = create_device_properties( obj->pProperties, obj->cPropertyCount, &impl->properties )))
+    {
+        free( impl );
+        return hr;
+    }
+
+    if (FAILED(hr = WindowsCreateString( obj->pszObjectId, wcslen( obj->pszObjectId ), &impl->id )))
+    {
+        IMap_HSTRING_IInspectable_Release( impl->properties );
+        free( impl );
+        return hr;
+    }
+
+    *info = &impl->IDeviceInformationUpdate_iface;
+    TRACE( "created DeviceInformation %p\n", impl );
+    return S_OK;
+}

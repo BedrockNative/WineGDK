@@ -1,8 +1,10 @@
 MODULE        = windows.networking.connectivity.dll
-IMPORTS       = combase
-EXTRAIDLFLAGS = -DDO_NO_IMPORTS
+IMPORTS       = combase propsys uuid
 
 SOURCES = \
+	async.c \
+	async_private.idl \
+	pushnotifications.c \
 	classes.idl \
 	main.c \
 	network_information.c

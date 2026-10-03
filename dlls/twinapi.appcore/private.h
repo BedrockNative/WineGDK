@@ -26,8 +26,13 @@
 #include "winstring.h"
 #include "appnotify.h"
 #include "activation.h"
+#include "corewindow.h"
 #include "shlobj.h"
 
+#define WIDL_using_Windows_System
+#define WIDL_using_Windows_ApplicationModel
+#define WIDL_using_Windows_ApplicationModel_Activation
+#define WIDL_using_Windows_UI_Core
 #define WIDL_using_Windows_Foundation
 #define WIDL_using_Windows_Foundation_Collections
 #include "windows.foundation.h"
@@ -53,6 +58,10 @@ extern IActivationFactory *client_device_information_factory;
 extern IActivationFactory *analytics_info_factory;
 extern IActivationFactory *advertising_manager_factory;
 extern IActivationFactory *data_transfer_manager_statics_factory;
+#define WIDL_using_Windows_ApplicationModel_Preview_Holographic
+#include "windows.applicationmodel.preview.holographic.h"
+extern IActivationFactory *holographic_factory;
+extern IActivationFactory *memory_factory;
 extern IActivationFactory *core_application_factory;
 
 #define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \
@@ -92,3 +101,7 @@ extern IActivationFactory *core_application_factory;
     }
 #define DEFINE_IINSPECTABLE( pfx, iface_type, impl_type, base_iface )                              \
     DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from_##iface_type, iface_type##_iface, &impl->base_iface )
+
+#define WIDL_using_Windows_System_Power
+#include "windows.system.power.h"
+extern IActivationFactory *power_factory;

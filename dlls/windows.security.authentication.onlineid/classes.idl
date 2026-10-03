@@ -27,3 +27,9 @@ namespace Windows.Security.Authentication.OnlineId {
     runtimeclass OnlineIdSystemAuthenticator;
     runtimeclass OnlineIdServiceTicketRequest;
 }
+
+import "windows.security.authentication.web.core.idl";
+namespace Windows.Security.Authentication.Web.Core {
+ runtimeclass WebAuthenticationCoreManager;
+ runtimeclass WebTokenRequest;
+}

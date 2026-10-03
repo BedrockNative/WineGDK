@@ -85,6 +85,13 @@ HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **fa
     else if (!wcscmp( buffer, RuntimeClass_Windows_ApplicationModel_DataTransfer_DataTransferManager ))
         IActivationFactory_QueryInterface( data_transfer_manager_statics_factory, &IID_IActivationFactory, (void **)factory );
 
+    if (!wcscmp(buffer, RuntimeClass_Windows_ApplicationModel_Preview_Holographic_HolographicApplicationPreview))
+        IActivationFactory_QueryInterface(holographic_factory, &IID_IActivationFactory, (void **)factory);
+    if (!wcscmp(buffer, RuntimeClass_Windows_System_MemoryManager))
+        IActivationFactory_QueryInterface(memory_factory,&IID_IActivationFactory,(void **)factory);
+    if (!wcscmp(buffer, RuntimeClass_Windows_System_Power_PowerManager))
+        IActivationFactory_QueryInterface(power_factory, &IID_IActivationFactory, (void **)factory);
+
     if (*factory) return S_OK;
     return CLASS_E_CLASSNOTAVAILABLE;
 }

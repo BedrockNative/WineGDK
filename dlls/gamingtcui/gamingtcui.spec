@@ -19,7 +19,7 @@
 @ stub ShowPlayerPickerUIForUser
 @ stdcall ShowProfileCardUI(ptr ptr ptr)
 @ stub ShowProfileCardUIForUser
-@ stub ShowTitleAchievementsUI
+@ stdcall ShowTitleAchievementsUI(long ptr ptr)
 @ stub ShowTitleAchievementsUIForUser
 @ stub ShowUserSettingsUI
 @ stub ShowUserSettingsUIForUser

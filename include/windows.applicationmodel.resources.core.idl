@@ -1,0 +1,40 @@
+/* Resource contexts. SPDX-License-Identifier: LGPL-2.1-or-later */
+#ifdef __WIDL__
+#pragma winrt ns_prefix
+#endif
+import "inspectable.idl";
+import "windows.foundation.idl";
+import "windows.foundation.collections.idl";
+namespace Windows.Foundation.Collections {
+    declare {
+        interface Windows.Foundation.Collections.MapChangedEventHandler<HSTRING,HSTRING>;
+        interface Windows.Foundation.Collections.IObservableMap<HSTRING,HSTRING>;
+    }
+}
+namespace Windows.ApplicationModel.Resources.Core {
+    interface IResourceContext;
+    runtimeclass ResourceContext;
+    [contract(Windows.Foundation.UniversalApiContract, 1.0), exclusiveto(ResourceContext),
+     uuid(2fa22f4b-707e-4b27-ad0d-d0d8cd468fd2)]
+    interface IResourceContext : IInspectable {
+        [propget] HRESULT QualifierValues([out, retval] Windows.Foundation.Collections.IObservableMap<HSTRING,HSTRING> **value);
+        HRESULT Reset();
+        HRESULT ResetQualifierValues([in] Windows.Foundation.Collections.IIterable<HSTRING> *names);
+        HRESULT OverrideToMatch([in] IInspectable *qualifiers);
+        HRESULT Clone([out, retval] ResourceContext **value);
+        [propget] HRESULT Languages([out, retval] Windows.Foundation.Collections.IVectorView<HSTRING> **value);
+        [propput] HRESULT Languages([in] Windows.Foundation.Collections.IVectorView<HSTRING> *value);
+    }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0), exclusiveto(ResourceContext),
+     uuid(41f752ef-12af-41b9-ab36-b1eb4b512460)]
+    interface IResourceContextStatics2 : IInspectable {
+        HRESULT GetForCurrentView([out, retval] ResourceContext **value);
+        HRESULT SetGlobalQualifierValue([in] HSTRING key, [in] HSTRING value);
+        HRESULT ResetGlobalQualifierValues();
+        HRESULT ResetGlobalQualifierValuesForSpecifiedQualifiers([in] Windows.Foundation.Collections.IIterable<HSTRING> *names);
+        HRESULT GetForViewIndependentUse([out, retval] ResourceContext **value);
+    }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0), activatable(Windows.Foundation.UniversalApiContract, 1.0),
+     static(Windows.ApplicationModel.Resources.Core.IResourceContextStatics2, Windows.Foundation.UniversalApiContract, 1.0)]
+    runtimeclass ResourceContext { [default] interface Windows.ApplicationModel.Resources.Core.IResourceContext; }
+}

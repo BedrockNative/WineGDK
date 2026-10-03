@@ -1,10 +1,12 @@
 MODULE    = msxml6.dll
-IMPORTS   = oleaut32 ole32 advapi32
+IMPORTS   = oleaut32 ole32 advapi32 winhttp
 
 VER_FILEDESCRIPTION_STR = "Wine MSXML 6.0"
 VER_PRODUCTVERSION      = 6,30,7601,24498
 VER_OLESELFREGISTER     = 1
 
 SOURCES = \
+	classes.idl \
+	httprequest2.c \
 	msxml6_tlb.idl \
 	rsrc.rc

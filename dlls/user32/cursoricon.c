@@ -358,7 +358,10 @@ static BITMAPINFO *load_png(const char *png_data, DWORD *size)
     {
     case PNG_COLOR_TYPE_RGB:
         if (bit_depth == 8)
+        {
+            png_set_bgr(png_ptr);
             bpp = 24;
+        }
         break;
 
     case PNG_COLOR_TYPE_RGB_ALPHA:

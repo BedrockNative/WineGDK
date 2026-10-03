@@ -1,8 +1,15 @@
 MODULE  = windows.applicationmodel.dll
-IMPORTS = combase kernelbase
+IMPORTS = combase kernelbase advapi32 propsys uuid ws2_32 xmllite shlwapi
 
 SOURCES = \
 	classes.idl \
+	extendedexecution.c \
 	designmode.c \
 	main.c \
-	package.c
+	package.c \
+	package_identity.c \
+	resource_context.c \
+	store.c \
+	store_async.c \
+	store_async_private.idl \
+	store_xodus.c

@@ -3914,6 +3914,72 @@ fail:
 }
 
 /******************************************************************
+ *              LdrResolveDelayLoadsFromDll (NTDLL.@)
+ */
+NTSTATUS WINAPI LdrResolveDelayLoadsFromDll( void *base, const char *name, ULONG flags )
+{
+    const IMAGE_DELAYLOAD_DESCRIPTOR *desc;
+    IMAGE_THUNK_DATA *iat, *imports;
+    UNICODE_STRING module_name;
+    HMODULE *module;
+    NTSTATUS status = STATUS_DLL_NOT_FOUND;
+    ULONG size, i;
+    void *proc;
+
+    TRACE( "%p, %s, %#lx\n", base, debugstr_a(name), flags );
+
+    if (!base || !name || flags) return STATUS_INVALID_PARAMETER;
+    desc = RtlImageDirectoryEntryToData( base, TRUE, IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT, &size );
+    if (!desc) return STATUS_DLL_NOT_FOUND;
+
+    RtlEnterCriticalSection( &loader_section );
+    for (; size >= sizeof(*desc) && desc->DllNameRVA; ++desc, size -= sizeof(*desc))
+    {
+        const char *dll_name = get_rva( base, desc->DllNameRVA );
+
+        if (stricmp( name, dll_name )) continue;
+        if (!desc->Attributes.RvaBased)
+        {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+        module = get_rva( base, desc->ModuleHandleRVA );
+        if (!*module)
+        {
+            if (!RtlCreateUnicodeStringFromAsciiz( &module_name, dll_name ))
+            {
+                status = STATUS_NO_MEMORY;
+                break;
+            }
+            status = LdrLoadDll( NULL, 0, &module_name, module );
+            RtlFreeUnicodeString( &module_name );
+            if (status) break;
+        }
+        imports = get_rva( base, desc->ImportNameTableRVA );
+        iat = get_rva( base, desc->ImportAddressTableRVA );
+        status = STATUS_SUCCESS;
+        for (i = 0; imports[i].u1.Ordinal; ++i)
+        {
+            if (IMAGE_SNAP_BY_ORDINAL( imports[i].u1.Ordinal ))
+                status = LdrGetProcedureAddress( *module, NULL, LOWORD(imports[i].u1.Ordinal), &proc );
+            else
+            {
+                const IMAGE_IMPORT_BY_NAME *import = get_rva( base, imports[i].u1.AddressOfData );
+                ANSI_STRING function;
+
+                RtlInitAnsiString( &function, (const char *)import->Name );
+                status = LdrGetProcedureAddress( *module, &function, 0, &proc );
+            }
+            if (status) break;
+            iat[i].u1.Function = (ULONG_PTR)proc;
+        }
+        break;
+    }
+    RtlLeaveCriticalSection( &loader_section );
+    return status;
+}
+
+/******************************************************************
  *		LdrShutdownProcess (NTDLL.@)
  *
  */

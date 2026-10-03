@@ -1064,6 +1064,74 @@ void WINAPI DevCloseObjectQuery( HDEVQUERY query )
     return;
 }
 
+/* The local machine's container identity is fixed by the device-container API.
+ * Use the SMBIOS values populated by wineboot, rather than inventing hardware. */
+static LSTATUS copy_system_container_properties( const WCHAR *id, BOOL all_props, ULONG keys_len,
+                                                 const DEVPROPCOMPKEY *keys, ULONG *count, const DEVPROPERTY **out )
+{
+    static const WCHAR system_id[] = L"{00000000-0000-0000-FFFF-FFFFFFFFFFFF}";
+    const DEVPROPCOMPKEY default_keys[] =
+    {
+        {DEVPKEY_DeviceContainer_Manufacturer, DEVPROP_STORE_SYSTEM, NULL},
+        {DEVPKEY_DeviceContainer_ModelName, DEVPROP_STORE_SYSTEM, NULL},
+    };
+    DEVPROPERTY *properties;
+    HKEY bios;
+    LSTATUS err;
+    ULONG i, len = 0;
+
+    *count = 0;
+    *out = NULL;
+    if (wcsicmp( id, system_id )) return ERROR_FILE_NOT_FOUND;
+    if (all_props)
+    {
+        keys = default_keys;
+        keys_len = ARRAY_SIZE(default_keys);
+    }
+    if (!keys_len) return ERROR_SUCCESS;
+    if ((err = RegOpenKeyExW( HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", 0, KEY_QUERY_VALUE, &bios )))
+        return err;
+    if (!(properties = calloc( keys_len, sizeof(*properties) )))
+    {
+        RegCloseKey( bios );
+        return ERROR_OUTOFMEMORY;
+    }
+    for (i = 0; i < keys_len; ++i)
+    {
+        const WCHAR *name;
+        DWORD size = 0;
+        void *buffer;
+
+        if (keys[i].Store != DEVPROP_STORE_SYSTEM || keys[i].LocaleName) continue;
+        if (IsEqualDevPropKey( keys[i].Key, DEVPKEY_DeviceContainer_Manufacturer )) name = L"SystemManufacturer";
+        else if (IsEqualDevPropKey( keys[i].Key, DEVPKEY_DeviceContainer_ModelName )) name = L"SystemProductName";
+        else continue;
+        if ((err = RegGetValueW( bios, NULL, name, RRF_RT_REG_SZ, NULL, NULL, &size )))
+        {
+            if (err == ERROR_FILE_NOT_FOUND) { err = ERROR_SUCCESS; continue; }
+            break;
+        }
+        if (!(buffer = malloc( size ))) { err = ERROR_OUTOFMEMORY; break; }
+        if ((err = RegGetValueW( bios, NULL, name, RRF_RT_REG_SZ, NULL, buffer, &size )))
+        {
+            free( buffer );
+            break;
+        }
+        properties[len].CompKey = keys[i];
+        properties[len].Type = DEVPROP_TYPE_STRING;
+        properties[len].BufferSize = size;
+        properties[len++].Buffer = buffer;
+    }
+    RegCloseKey( bios );
+    if (err) DevFreeObjectProperties( len, properties );
+    else
+    {
+        *out = properties;
+        *count = len;
+    }
+    return err;
+}
+
 HRESULT WINAPI DevGetObjectProperties( DEV_OBJECT_TYPE type, const WCHAR *id, ULONG flags, ULONG props_len,
                                        const DEVPROPCOMPKEY *props, ULONG *buf_len, const DEVPROPERTY **buf )
 {
@@ -1092,6 +1160,11 @@ HRESULT WINAPI DevGetObjectPropertiesEx( DEV_OBJECT_TYPE type, const WCHAR *id, 
 
     switch (type)
     {
+    case DevObjectTypeDeviceContainer:
+    case DevObjectTypeDeviceContainerDisplay:
+        err = copy_system_container_properties( id, all_props, props_len, props, buf_len, buf );
+        break;
+
     case DevObjectTypeDeviceInterface:
     case DevObjectTypeDeviceInterfaceDisplay:
     {

@@ -25,6 +25,7 @@
 #include "ntstatus.h"
 #include "windef.h"
 #include "winbase.h"
+#include "appmodel.h"
 #include "winnls.h"
 #include "winternl.h"
 #include "ddk/ntddk.h"
@@ -589,9 +590,36 @@ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExW( LPCWSTR name, HANDLE file, DWOR
  */
 HMODULE WINAPI /* DECLSPEC_HOTPATCH */ LoadPackagedLibrary( LPCWSTR name, DWORD reserved )
 {
-    FIXME( "semi-stub, name %s, reserved %#lx.\n", debugstr_w(name), reserved );
-    SetLastError( APPMODEL_ERROR_NO_PACKAGE );
-    return NULL;
+    WCHAR *path;
+    const WCHAR *component, *end;
+    UINT32 length=0;
+    LONG ret;
+    HMODULE module;
+    SIZE_T count;
+
+    TRACE("name %s, reserved %#lx.\n",debugstr_w(name),reserved);
+    if (!name || !*name || reserved || wcschr(name,':') || wcschr(name,'/') || name[0]=='\\')
+    { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
+    for (component=name; component; component=*end ? end+1 : NULL)
+    {
+        end=wcschr(component,'\\'); if (!end) end=component+wcslen(component);
+        if (end-component==2 && component[0]=='.' && component[1]=='.')
+        { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
+    }
+    ret=GetCurrentPackagePath(&length,NULL);
+    if (ret!=ERROR_INSUFFICIENT_BUFFER) { SetLastError(ret); return NULL; }
+    count=length+wcslen(name)+2;
+    if (count>32767 || !(path=HeapAlloc(GetProcessHeap(),0,count*sizeof(*path))))
+    { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
+    ret=GetCurrentPackagePath(&length,path);
+    if (ret) { HeapFree(GetProcessHeap(),0,path); SetLastError(ret); return NULL; }
+    wcscat(path,L"\\"); wcscat(path,name);
+    /* Explicit loose-package opt-in. Dependencies currently use Wine's DLL
+     * directory and system32 search; package dependency graphs are not implemented. */
+    module=LoadLibraryExW(path,NULL,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);
+    ret=GetLastError();
+    HeapFree(GetProcessHeap(),0,path);
+    SetLastError(ret); return module;
 }
 
 

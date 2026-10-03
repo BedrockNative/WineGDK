@@ -550,3 +550,34 @@ namespace Windows.System
         /* [contract(Windows.Foundation.UniversalApiContract, 10.0)] interface Windows.System.IUserChangedEventArgs2; */
     }
 }
+
+namespace Windows.System {
+    typedef enum AppMemoryUsageLevel AppMemoryUsageLevel;
+    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
+    enum AppMemoryUsageLevel { Low=0, Medium=1, High=2, OverLimit=3 };
+    runtimeclass MemoryManager;
+    runtimeclass AppMemoryUsageLimitChangingEventArgs;
+    declare { interface Windows.Foundation.EventHandler<IInspectable *>;
+              interface Windows.Foundation.EventHandler<Windows.System.AppMemoryUsageLimitChangingEventArgs *>; }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0), exclusiveto(Windows.System.AppMemoryUsageLimitChangingEventArgs), uuid(79f86664-feca-4da5-9e40-2bc63efdc979)]
+    interface IAppMemoryUsageLimitChangingEventArgs : IInspectable {
+        [propget] HRESULT OldLimit([out, retval] UINT64 *value);
+        [propget] HRESULT NewLimit([out, retval] UINT64 *value);
+    }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
+    runtimeclass AppMemoryUsageLimitChangingEventArgs { [default] interface Windows.System.IAppMemoryUsageLimitChangingEventArgs; }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0), exclusiveto(Windows.System.MemoryManager), uuid(5c6c279c-d7ca-4779-9188-4057219ce64c)]
+    interface IMemoryManagerStatics : IInspectable {
+        [propget] HRESULT AppMemoryUsage([out, retval] UINT64 *value);
+        [propget] HRESULT AppMemoryUsageLimit([out, retval] UINT64 *value);
+        [propget] HRESULT AppMemoryUsageLevel([out, retval] Windows.System.AppMemoryUsageLevel *value);
+        [eventadd] HRESULT AppMemoryUsageIncreased([in] Windows.Foundation.EventHandler<IInspectable *> *handler, [out, retval] EventRegistrationToken *token);
+        [eventremove] HRESULT AppMemoryUsageIncreased([in] EventRegistrationToken token);
+        [eventadd] HRESULT AppMemoryUsageDecreased([in] Windows.Foundation.EventHandler<IInspectable *> *handler, [out, retval] EventRegistrationToken *token);
+        [eventremove] HRESULT AppMemoryUsageDecreased([in] EventRegistrationToken token);
+        [eventadd] HRESULT AppMemoryUsageLimitChanging([in] Windows.Foundation.EventHandler<Windows.System.AppMemoryUsageLimitChangingEventArgs *> *handler, [out, retval] EventRegistrationToken *token);
+        [eventremove] HRESULT AppMemoryUsageLimitChanging([in] EventRegistrationToken token);
+    }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0), static(Windows.System.IMemoryManagerStatics, Windows.Foundation.UniversalApiContract, 1.0)]
+    runtimeclass MemoryManager { }
+}

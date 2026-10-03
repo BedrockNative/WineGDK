@@ -80,3 +80,6 @@
 @ stdcall -private DllCanUnloadNow()
 @ stdcall -private DllGetActivationFactory(ptr ptr)
 @ stdcall -private DllGetClassObject(ptr ptr ptr)
+
+# Wine internal helper for unpacked package identity.
+@ stdcall -private __wine_get_package_property(wstr ptr ptr)

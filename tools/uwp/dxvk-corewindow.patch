@@ -1,0 +1,231 @@
+diff --git a/src/dxgi/dxgi_factory.cpp b/src/dxgi/dxgi_factory.cpp
+index d89409e..6096068 100644
+--- a/src/dxgi/dxgi_factory.cpp
++++ b/src/dxgi/dxgi_factory.cpp
+@@ -1,4 +1,6 @@
+ #include <algorithm>
++#include <inspectable.h>
++#include <winstring.h>
+ 
+ #include "dxgi_factory.h"
+ #include "dxgi_surface.h"
+@@ -9,6 +11,44 @@
+ 
+ namespace dxvk {
+ 
++  // Native CoreWindow interoperability, also provided by Wine's UWP host.
++  struct CoreWindowInterop : IUnknown {
++    virtual HRESULT STDMETHODCALLTYPE get_WindowHandle(HWND* window) = 0;
++    virtual HRESULT STDMETHODCALLTYPE put_MessageHandled(BOOL handled) = 0;
++  };
++  static const GUID iidCoreWindowInterop =
++    {0x45d64a29,0xa63e,0x4cb6,{0xb4,0x98,0x57,0x81,0xd2,0x98,0xcb,0x4f}};
++
++
++  // A full-window XAML composition target can use the thread's CoreWindow.
++  // Child/multiple composition surfaces still require a separate compositor.
++  struct CoreWindowStatic : IInspectable {
++    virtual HRESULT STDMETHODCALLTYPE GetForCurrentThread(IUnknown** window) = 0;
++  };
++  static HRESULT getThreadCompositionWindow(HWND* hwnd) {
++    static const GUID iidStatics =
++      {0x4d239005,0x3c2a,0x41b1,{0x90,0x22,0x53,0x6b,0xb9,0xcf,0x93,0xb1}};
++    HMODULE module = GetModuleHandleW(L"combase.dll");
++    if (!module) return E_NOINTERFACE;
++    auto createString = reinterpret_cast<HRESULT (WINAPI *)(PCNZWCH, UINT32, HSTRING*)>(GetProcAddress(module, "WindowsCreateString"));
++    auto deleteString = reinterpret_cast<HRESULT (WINAPI *)(HSTRING)>(GetProcAddress(module, "WindowsDeleteString"));
++    auto getFactory = reinterpret_cast<HRESULT (WINAPI *)(HSTRING, REFIID, void**)>(GetProcAddress(module, "RoGetActivationFactory"));
++    if (!createString || !deleteString || !getFactory) return E_NOINTERFACE;
++    HSTRING name = nullptr;
++    HRESULT hr = createString(L"Windows.UI.Core.CoreWindow", 26, &name);
++    if (FAILED(hr)) return hr;
++    Com<CoreWindowStatic> statics;
++    hr = getFactory(name, iidStatics, reinterpret_cast<void**>(&statics));
++    deleteString(name);
++    if (FAILED(hr)) return hr;
++    Com<IUnknown> window;
++    hr = statics->GetForCurrentThread(&window);
++    if (FAILED(hr) || !window) return E_NOINTERFACE;
++    Com<CoreWindowInterop> interop;
++    hr = window->QueryInterface(iidCoreWindowInterop, reinterpret_cast<void**>(&interop));
++    return FAILED(hr) ? hr : interop->get_WindowHandle(hwnd);
++  }
++
+   static Singleton<DxvkInstance>   g_dxvkInstance;
+   static Singleton<DxgiOptions>    g_dxgiOptions;
+ 
+@@ -274,8 +314,20 @@ namespace dxvk {
+           IDXGISwapChain1**     ppSwapChain) {
+     InitReturnPtr(ppSwapChain);
+     
+-    Logger::err("DxgiFactory::CreateSwapChainForCoreWindow: Not implemented");
+-    return E_NOTIMPL;
++    if (!ppSwapChain || !pDesc || !pWindow || !pDevice)
++      return DXGI_ERROR_INVALID_CALL;
++
++    Com<CoreWindowInterop> interop;
++    HRESULT hr = pWindow->QueryInterface(iidCoreWindowInterop,
++      reinterpret_cast<void**>(&interop));
++    if (FAILED(hr)) return hr;
++    HWND hwnd = nullptr;
++    hr = interop->get_WindowHandle(&hwnd);
++    if (FAILED(hr)) return hr;
++    if (!hwnd) return DXGI_ERROR_INVALID_CALL;
++
++    return CreateSwapChainBase(pDevice, hwnd, pDesc, nullptr,
++      pRestrictToOutput, ppSwapChain, pWindow);
+   }
+   
+   
+@@ -286,6 +338,18 @@ namespace dxvk {
+           IDXGISwapChain1**     ppSwapChain) {
+     InitReturnPtr(ppSwapChain);
+ 
++    if (!ppSwapChain || !pDesc || !pDevice || !pDesc->Width || !pDesc->Height)
++      return DXGI_ERROR_INVALID_CALL;
++
++    HWND hwnd = nullptr;
++    if (SUCCEEDED(getThreadCompositionWindow(&hwnd)) && hwnd) {
++      if (pDesc->SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL
++       && pDesc->SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD)
++        return DXGI_ERROR_INVALID_CALL;
++      return CreateSwapChainBase(pDevice, hwnd, pDesc, nullptr,
++        pRestrictToOutput, ppSwapChain, nullptr, true);
++    }
++
+     if (!m_options->enableDummyCompositionSwapchain) {
+       Logger::err("DxgiFactory::CreateSwapChainForComposition: Not implemented");
+       return E_NOTIMPL;
+@@ -527,7 +591,9 @@ namespace dxvk {
+     const DXGI_SWAP_CHAIN_DESC1* pDesc,
+     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
+           IDXGIOutput*          pRestrictToOutput,
+-          IDXGISwapChain1**     ppSwapChain) {
++          IDXGISwapChain1**     ppSwapChain,
++          IUnknown*             pCoreWindow,
++          bool                  composition) {
+     // Make sure the back buffer size is not zero
+     DXGI_SWAP_CHAIN_DESC1 desc = *pDesc;
+ 
+@@ -567,7 +633,7 @@ namespace dxvk {
+         return hr;
+       }
+ 
+-      frontendSwapChain = new DxgiSwapChain(this, presenter.ptr(), hWnd, &desc, &fsDesc, pDevice);
++      frontendSwapChain = new DxgiSwapChain(this, presenter.ptr(), hWnd, &desc, &fsDesc, pDevice, pCoreWindow, composition);
+     } else {
+       Logger::err("DXGI: CreateSwapChainForHwnd: Unsupported device type");
+       return DXGI_ERROR_UNSUPPORTED;
+diff --git a/src/dxgi/dxgi_factory.h b/src/dxgi/dxgi_factory.h
+index d6a6808..01b48d6 100644
+--- a/src/dxgi/dxgi_factory.h
++++ b/src/dxgi/dxgi_factory.h
+@@ -214,7 +214,9 @@ namespace dxvk {
+       const DXGI_SWAP_CHAIN_DESC1* pDesc,
+       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
+             IDXGIOutput*          pRestrictToOutput,
+-            IDXGISwapChain1**     ppSwapChain);
++            IDXGISwapChain1**     ppSwapChain,
++            IUnknown*             pCoreWindow = nullptr,
++            bool                  composition = false);
+   };
+   
+ }
+diff --git a/src/dxgi/dxgi_swapchain.cpp b/src/dxgi/dxgi_swapchain.cpp
+index 71e69f9..207730a 100644
+--- a/src/dxgi/dxgi_swapchain.cpp
++++ b/src/dxgi/dxgi_swapchain.cpp
+@@ -14,9 +14,13 @@ namespace dxvk {
+           HWND                        hWnd,
+     const DXGI_SWAP_CHAIN_DESC1*      pDesc,
+     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*  pFullscreenDesc,
+-          IUnknown*                   pDevice)
++          IUnknown*                   pDevice,
++          IUnknown*                   pCoreWindow,
++          bool                        composition)
+   : m_factory   (pFactory),
++    m_composition(composition),
+     m_window    (hWnd),
++    m_coreWindow(pCoreWindow),
+     m_desc      (*pDesc),
+     m_descFs    (*pFullscreenDesc),
+     m_presentId (0u),
+@@ -301,7 +305,8 @@ namespace dxvk {
+     if (pHwnd == nullptr)
+       return E_INVALIDARG;
+     
+-    *pHwnd = m_window;
++    *pHwnd = (m_coreWindow || m_composition) ? nullptr : m_window;
++    if (m_coreWindow || m_composition) return DXGI_ERROR_INVALID_CALL;
+     return S_OK;
+   }
+   
+@@ -311,8 +316,8 @@ namespace dxvk {
+           void**                    ppUnk) {
+     InitReturnPtr(ppUnk);
+     
+-    Logger::err("DxgiSwapChain::GetCoreWindow: Not implemented");
+-    return E_NOTIMPL;
++    if (!ppUnk) return E_INVALIDARG;
++    return m_coreWindow ? m_coreWindow->QueryInterface(refiid, ppUnk) : DXGI_ERROR_INVALID_CALL;
+   }
+   
+   
+@@ -596,9 +601,10 @@ namespace dxvk {
+ 
+   HRESULT STDMETHODCALLTYPE DxgiSwapChain::GetMatrixTransform(
+           DXGI_MATRIX_3X2_F*        pMatrix) {
+-    // We don't support composition swap chains
+-    Logger::err("DxgiSwapChain::GetMatrixTransform: Not supported");
+-    return DXGI_ERROR_INVALID_CALL;
++    if (!m_composition || !pMatrix) return DXGI_ERROR_INVALID_CALL;
++    std::lock_guard<dxvk::mutex> lock(m_lockBuffer);
++    *pMatrix = m_matrix;
++    return S_OK;
+   }
+ 
+   
+@@ -624,9 +630,14 @@ namespace dxvk {
+   
+   HRESULT STDMETHODCALLTYPE DxgiSwapChain::SetMatrixTransform(
+     const DXGI_MATRIX_3X2_F*        pMatrix) {
+-    // We don't support composition swap chains
+-    Logger::err("DxgiSwapChain::SetMatrixTransform: Not supported");
+-    return DXGI_ERROR_INVALID_CALL;
++    if (!m_composition || !pMatrix) return DXGI_ERROR_INVALID_CALL;
++    // The full-window backend supports the identity transform only.
++    if (pMatrix->_11 != 1 || pMatrix->_22 != 1 || pMatrix->_12 != 0
++     || pMatrix->_21 != 0 || pMatrix->_31 != 0 || pMatrix->_32 != 0)
++      return E_NOTIMPL;
++    std::lock_guard<dxvk::mutex> lock(m_lockBuffer);
++    m_matrix = *pMatrix;
++    return S_OK;
+   }
+ 
+   
+diff --git a/src/dxgi/dxgi_swapchain.h b/src/dxgi/dxgi_swapchain.h
+index c8da01d..8ad5cf2 100644
+--- a/src/dxgi/dxgi_swapchain.h
++++ b/src/dxgi/dxgi_swapchain.h
+@@ -31,7 +31,9 @@ namespace dxvk {
+             HWND                        hWnd,
+       const DXGI_SWAP_CHAIN_DESC1*      pDesc,
+       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*  pFullscreenDesc,
+-            IUnknown*                   pDevice);
++            IUnknown*                   pDevice,
++            IUnknown*                   pCoreWindow,
++            bool                        composition);
+     
+     ~DxgiSwapChain();
+     
+@@ -186,7 +188,10 @@ namespace dxvk {
+     Com<IDXGIOutput1>               m_target;
+     Com<IDXGIVkMonitorInfo>         m_monitorInfo;
+     
++    bool                            m_composition;
++    DXGI_MATRIX_3X2_F               m_matrix = {1, 0, 0, 1, 0, 0};
+     HWND                            m_window;
++    Com<IUnknown>                   m_coreWindow;
+     DXGI_SWAP_CHAIN_DESC1           m_desc;
+     DXGI_SWAP_CHAIN_FULLSCREEN_DESC m_descFs;
+     UINT                            m_presentId;

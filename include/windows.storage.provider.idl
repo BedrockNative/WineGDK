@@ -1,0 +1,26 @@
+/* Copyright 2026 WineGDK contributors
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+#ifdef __WIDL__
+#pragma makedep header install
+#pragma winrt ns_prefix
+#endif
+
+#ifndef DO_NO_IMPORTS
+import "windowscontracts.idl";
+#endif
+
+namespace Windows.Storage.Provider
+{
+    typedef enum FileUpdateStatus FileUpdateStatus;
+    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
+    enum FileUpdateStatus
+    {
+        Incomplete = 0,
+        Complete = 1,
+        UserInputNeeded = 2,
+        CurrentlyUnavailable = 3,
+        Failed = 4,
+        CompleteAndRenamed = 5
+    };
+}

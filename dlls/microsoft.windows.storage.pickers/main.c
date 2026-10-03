@@ -44,10 +44,20 @@ HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **fa
         IActivationFactory_QueryInterface( file_save_picker_factory, &IID_IActivationFactory, (void **)factory );
     else if (!wcscmp( buffer, RuntimeClass_Microsoft_Windows_Storage_Pickers_FolderPicker ))
         IActivationFactory_QueryInterface( folder_picker_factory, &IID_IActivationFactory, (void **)factory );
+    else if (!wcscmp( buffer, L"Windows.Storage.Pickers.FileOpenPicker" ))
+        IActivationFactory_QueryInterface( uwp_open_picker_factory, &IID_IActivationFactory, (void **)factory );
     else if (!wcscmp( buffer, L"Windows.Storage.Pickers.FileSavePicker" ))
         IActivationFactory_QueryInterface( uwp_save_picker_factory, &IID_IActivationFactory, (void **)factory );
     else if (!wcscmp( buffer, L"Windows.Storage.StorageFile" ))
         IActivationFactory_QueryInterface( storage_file_factory, &IID_IActivationFactory, (void **)factory );
+    else if (!wcscmp( buffer, L"Windows.Storage.CachedFileManager" ))
+        IActivationFactory_QueryInterface( cached_file_manager_factory, &IID_IActivationFactory, (void **)factory );
+
+    if (!wcscmp(buffer, L"Windows.Storage.FileIO"))
+        IActivationFactory_QueryInterface(file_io_factory, &IID_IActivationFactory, (void **)factory);
+
+    if (!wcscmp(buffer, L"Windows.Storage.AccessCache.StorageApplicationPermissions"))
+        IActivationFactory_QueryInterface(storage_permissions_factory, &IID_IActivationFactory, (void **)factory);
 
     if (*factory) return S_OK;
     FIXME( "class %s not implemented\n", debugstr_hstring( classid ) );

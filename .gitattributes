@@ -58,3 +58,6 @@ dlls/win32u/vertical.c generated
 dlls/wineps.drv/direction.c generated
 dlls/wineps.drv/vertical.c generated
 nls/*.nls generated
+
+# Patch context preserves whitespace from the upstream source.
+tools/uwp/*.patch -whitespace

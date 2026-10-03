@@ -27,6 +27,15 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(gamingtcui);
 
+HRESULT WINAPI ShowTitleAchievementsUI(UINT32 title_id, GameUICompletionRoutine completion_routine, void *context)
+{
+    FIXME("title_id %u: Xbox achievements UI is unavailable.\n", title_id);
+    if (!completion_routine) return E_INVALIDARG;
+    /* No operation was started, so do not call the completion routine. The
+     * caller can handle this HRESULT instead of the missing-export exception. */
+    return E_NOTIMPL;
+}
+
 HRESULT WINAPI ProcessPendingGameUI(BOOL wait_for_completion)
 {
     FIXME("wait_for_completion %#x stub.\n", wait_for_completion);

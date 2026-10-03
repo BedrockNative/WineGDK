@@ -1,0 +1,226 @@
+/* Diagnostics channel contracts. SPDX-License-Identifier: LGPL-2.1-or-later */
+#ifdef __WIDL__
+#pragma winrt ns_prefix
+#endif
+import "windows.foundation.idl";
+namespace Windows.Foundation.Diagnostics {
+
+ typedef enum LoggingOpcode LoggingOpcode;
+ [contract(Windows.Foundation.UniversalApiContract,1.0)] enum LoggingOpcode { Info=0, Start=1, Stop=2, Reply=6, Resume=7, Suspend=8, Send=9 };
+ runtimeclass LoggingOptions;
+ [uuid(90bc7850-0192-4f5d-ac26-006adaca12d8),exclusiveto(LoggingOptions)]
+ interface ILoggingOptions : IInspectable {
+  [propget] HRESULT Keywords([out,retval] INT64 *value);
+  [propput] HRESULT Keywords([in] INT64 value);
+  [propget] HRESULT Tags([out,retval] INT32 *value);
+  [propput] HRESULT Tags([in] INT32 value);
+  [propget] HRESULT Task([out,retval] INT16 *value);
+  [propput] HRESULT Task([in] INT16 value);
+  [propget] HRESULT Opcode([out,retval] LoggingOpcode *value);
+  [propput] HRESULT Opcode([in] LoggingOpcode value);
+  [propget] HRESULT ActivityId([out,retval] GUID *value);
+  [propput] HRESULT ActivityId([in] GUID value);
+  [propget] HRESULT RelatedActivityId([out,retval] GUID *value);
+  [propput] HRESULT RelatedActivityId([in] GUID value);
+ }
+ [uuid(d713c6cb-98ab-464b-9f22-a3268478368a),exclusiveto(LoggingOptions)]
+ interface ILoggingOptionsFactory : IInspectable { HRESULT CreateWithKeywords([in] INT64 keywords,[out,retval] LoggingOptions **value); }
+ [contract(Windows.Foundation.UniversalApiContract,1.0),activatable(Windows.Foundation.Diagnostics.ILoggingOptionsFactory,Windows.Foundation.UniversalApiContract,1.0),activatable(Windows.Foundation.UniversalApiContract,1.0)]
+ runtimeclass LoggingOptions { [default] interface ILoggingOptions; }
+
+ typedef enum LoggingLevel LoggingLevel;
+ [contract(Windows.Foundation.UniversalApiContract,1.0)] enum LoggingLevel { Verbose=0, Information=1, Warning=2, Error=3, Critical=4 };
+ runtimeclass LoggingChannel;
+ runtimeclass LoggingChannelOptions;
+ declare { interface Windows.Foundation.TypedEventHandler<Windows.Foundation.Diagnostics.LoggingChannel *, IInspectable *>; }
+ [uuid(c3e847ff-0ebb-4a53-8c54-dec24926cb2c),exclusiveto(LoggingChannelOptions)]
+ interface ILoggingChannelOptions : IInspectable {
+  [propget] HRESULT Group([out,retval] GUID *value);
+  [propput] HRESULT Group([in] GUID value);
+ }
+ [uuid(a93151da-7faf-4191-8755-5e86dc65d896),exclusiveto(LoggingChannelOptions)]
+ interface ILoggingChannelOptionsFactory : IInspectable { HRESULT Create([in] GUID group,[out,retval] LoggingChannelOptions **value); }
+ [uuid(e9a50343-11d7-4f01-b5ca-cf495278c0a8),exclusiveto(LoggingChannel)]
+ interface ILoggingChannel : IInspectable {
+  [propget] HRESULT Name([out,retval] HSTRING *value);
+  [propget] HRESULT Enabled([out,retval] boolean *value);
+  [propget] HRESULT Level([out,retval] LoggingLevel *value);
+  HRESULT LogMessage([in] HSTRING message);
+  HRESULT LogMessageWithLevel([in] HSTRING message,[in] LoggingLevel level);
+  HRESULT LogValuePair([in] HSTRING name,[in] INT32 value);
+  HRESULT LogValuePairWithLevel([in] HSTRING name,[in] INT32 value,[in] LoggingLevel level);
+  [eventadd] HRESULT LoggingEnabled([in] Windows.Foundation.TypedEventHandler<LoggingChannel *, IInspectable *> *handler,[out,retval] EventRegistrationToken *token);
+  [eventremove] HRESULT LoggingEnabled([in] EventRegistrationToken token);
+ }
+ [uuid(9f4c3cf3-0bac-45a5-9e33-baf3f3a246a5),exclusiveto(LoggingChannel)]
+ interface ILoggingChannel2 : IInspectable { [propget] HRESULT Id([out,retval] GUID *value); }
+ [uuid(4edc5b9c-af80-4a9b-b0dc-398f9ae5207b),exclusiveto(LoggingChannel)]
+ interface ILoggingChannelFactory : IInspectable { HRESULT Create([in] HSTRING name,[out,retval] LoggingChannel **value); }
+ [uuid(4c6ef5dd-3b27-4dc9-99f0-299c6e4603a1),exclusiveto(LoggingChannel)]
+ interface ILoggingChannelFactory2 : IInspectable {
+  HRESULT CreateWithOptions([in] HSTRING name,[in] LoggingChannelOptions *options,[out,retval] LoggingChannel **value);
+  HRESULT CreateWithOptionsAndId([in] HSTRING name,[in] LoggingChannelOptions *options,[in] GUID id,[out,retval] LoggingChannel **value);
+ }
+ [uuid(65f16c35-e388-4e26-b17a-f51cd3a83916)]
+ interface ILoggingTarget : IInspectable {
+  HRESULT IsEnabled([out,retval] boolean *value);
+  HRESULT IsEnabledWithLevel([in] LoggingLevel level,[out,retval] boolean *value);
+  HRESULT IsEnabledWithLevelAndKeywords([in] LoggingLevel level,[in] INT64 keywords,[out,retval] boolean *value);
+  HRESULT LogEvent([in] HSTRING name);
+  HRESULT LogEventWithFields([in] HSTRING name,[in] IInspectable *fields);
+  HRESULT LogEventWithFieldsAndLevel([in] HSTRING name,[in] IInspectable *fields,[in] LoggingLevel level);
+  HRESULT LogEventWithFieldsAndOptions([in] HSTRING name,[in] IInspectable *fields,[in] LoggingLevel level,[in] IInspectable *options);
+  HRESULT StartActivity([in] HSTRING name,[out,retval] IInspectable **value);
+  HRESULT StartActivityWithFields([in] HSTRING name,[in] IInspectable *fields,[out,retval] IInspectable **value);
+  HRESULT StartActivityWithFieldsAndLevel([in] HSTRING name,[in] IInspectable *fields,[in] LoggingLevel level,[out,retval] IInspectable **value);
+  HRESULT StartActivityWithFieldsAndOptions([in] HSTRING name,[in] IInspectable *fields,[in] LoggingLevel level,[in] IInspectable *options,[out,retval] IInspectable **value);
+ }
+ [contract(Windows.Foundation.UniversalApiContract,1.0),activatable(Windows.Foundation.Diagnostics.ILoggingChannelOptionsFactory,Windows.Foundation.UniversalApiContract,1.0),activatable(Windows.Foundation.UniversalApiContract,1.0)]
+ runtimeclass LoggingChannelOptions { [default] interface ILoggingChannelOptions; }
+ [contract(Windows.Foundation.UniversalApiContract,1.0),activatable(Windows.Foundation.Diagnostics.ILoggingChannelFactory,Windows.Foundation.UniversalApiContract,1.0),activatable(Windows.Foundation.Diagnostics.ILoggingChannelFactory2,Windows.Foundation.UniversalApiContract,1.0)]
+ runtimeclass LoggingChannel { [default] interface ILoggingChannel; interface ILoggingChannel2; interface ILoggingTarget; interface Windows.Foundation.IClosable; }
+
+ typedef enum LoggingFieldFormat LoggingFieldFormat;
+ [contract(Windows.Foundation.UniversalApiContract,1.0)] enum LoggingFieldFormat {
+  Default=0,
+  Hidden=1,
+  String=2,
+  Boolean=3,
+  Hexadecimal=4,
+  ProcessId=5,
+  ThreadId=6,
+  Port=7,
+  Ipv4Address=8,
+  Ipv6Address=9,
+  SocketAddress=10,
+  Xml=11,
+  Json=12,
+  Win32Error=13,
+  NTStatus=14,
+  HResult=15,
+  FileTime=16,
+  Signed=17,
+  Unsigned=18
+ };
+ runtimeclass LoggingFields;
+ [uuid(d7f6b7af-762d-4579-83bd-52c23bc333bc),exclusiveto(LoggingFields)]
+ interface ILoggingFields : IInspectable {
+  HRESULT Clear();
+  HRESULT BeginStruct([in] HSTRING name);
+  HRESULT BeginStructWithTags([in] HSTRING name,[in] INT32 tags);
+  HRESULT EndStruct();
+  HRESULT AddEmpty([in] HSTRING name);
+  HRESULT AddEmptyWithFormat([in] HSTRING name,[in] LoggingFieldFormat format);
+  HRESULT AddEmptyWithFormatAndTags([in] HSTRING name,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddUInt8([in] HSTRING name,[in] BYTE value);
+  HRESULT AddUInt8WithFormat([in] HSTRING name,[in] BYTE value,[in] LoggingFieldFormat format);
+  HRESULT AddUInt8WithFormatAndTags([in] HSTRING name,[in] BYTE value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddUInt8Array([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] BYTE *value);
+  HRESULT AddUInt8ArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] BYTE *value,[in] LoggingFieldFormat format);
+  HRESULT AddUInt8ArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] BYTE *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddInt16([in] HSTRING name,[in] INT16 value);
+  HRESULT AddInt16WithFormat([in] HSTRING name,[in] INT16 value,[in] LoggingFieldFormat format);
+  HRESULT AddInt16WithFormatAndTags([in] HSTRING name,[in] INT16 value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddInt16Array([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] INT16 *value);
+  HRESULT AddInt16ArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] INT16 *value,[in] LoggingFieldFormat format);
+  HRESULT AddInt16ArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] INT16 *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddUInt16([in] HSTRING name,[in] UINT16 value);
+  HRESULT AddUInt16WithFormat([in] HSTRING name,[in] UINT16 value,[in] LoggingFieldFormat format);
+  HRESULT AddUInt16WithFormatAndTags([in] HSTRING name,[in] UINT16 value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddUInt16Array([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] UINT16 *value);
+  HRESULT AddUInt16ArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] UINT16 *value,[in] LoggingFieldFormat format);
+  HRESULT AddUInt16ArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] UINT16 *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddInt32([in] HSTRING name,[in] INT32 value);
+  HRESULT AddInt32WithFormat([in] HSTRING name,[in] INT32 value,[in] LoggingFieldFormat format);
+  HRESULT AddInt32WithFormatAndTags([in] HSTRING name,[in] INT32 value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddInt32Array([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] INT32 *value);
+  HRESULT AddInt32ArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] INT32 *value,[in] LoggingFieldFormat format);
+  HRESULT AddInt32ArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] INT32 *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddUInt32([in] HSTRING name,[in] UINT32 value);
+  HRESULT AddUInt32WithFormat([in] HSTRING name,[in] UINT32 value,[in] LoggingFieldFormat format);
+  HRESULT AddUInt32WithFormatAndTags([in] HSTRING name,[in] UINT32 value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddUInt32Array([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] UINT32 *value);
+  HRESULT AddUInt32ArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] UINT32 *value,[in] LoggingFieldFormat format);
+  HRESULT AddUInt32ArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] UINT32 *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddInt64([in] HSTRING name,[in] INT64 value);
+  HRESULT AddInt64WithFormat([in] HSTRING name,[in] INT64 value,[in] LoggingFieldFormat format);
+  HRESULT AddInt64WithFormatAndTags([in] HSTRING name,[in] INT64 value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddInt64Array([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] INT64 *value);
+  HRESULT AddInt64ArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] INT64 *value,[in] LoggingFieldFormat format);
+  HRESULT AddInt64ArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] INT64 *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddUInt64([in] HSTRING name,[in] UINT64 value);
+  HRESULT AddUInt64WithFormat([in] HSTRING name,[in] UINT64 value,[in] LoggingFieldFormat format);
+  HRESULT AddUInt64WithFormatAndTags([in] HSTRING name,[in] UINT64 value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddUInt64Array([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] UINT64 *value);
+  HRESULT AddUInt64ArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] UINT64 *value,[in] LoggingFieldFormat format);
+  HRESULT AddUInt64ArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] UINT64 *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddSingle([in] HSTRING name,[in] FLOAT value);
+  HRESULT AddSingleWithFormat([in] HSTRING name,[in] FLOAT value,[in] LoggingFieldFormat format);
+  HRESULT AddSingleWithFormatAndTags([in] HSTRING name,[in] FLOAT value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddSingleArray([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] FLOAT *value);
+  HRESULT AddSingleArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] FLOAT *value,[in] LoggingFieldFormat format);
+  HRESULT AddSingleArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] FLOAT *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddDouble([in] HSTRING name,[in] DOUBLE value);
+  HRESULT AddDoubleWithFormat([in] HSTRING name,[in] DOUBLE value,[in] LoggingFieldFormat format);
+  HRESULT AddDoubleWithFormatAndTags([in] HSTRING name,[in] DOUBLE value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddDoubleArray([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] DOUBLE *value);
+  HRESULT AddDoubleArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] DOUBLE *value,[in] LoggingFieldFormat format);
+  HRESULT AddDoubleArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] DOUBLE *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddChar16([in] HSTRING name,[in] UINT16 value);
+  HRESULT AddChar16WithFormat([in] HSTRING name,[in] UINT16 value,[in] LoggingFieldFormat format);
+  HRESULT AddChar16WithFormatAndTags([in] HSTRING name,[in] UINT16 value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddChar16Array([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] UINT16 *value);
+  HRESULT AddChar16ArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] UINT16 *value,[in] LoggingFieldFormat format);
+  HRESULT AddChar16ArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] UINT16 *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddBoolean([in] HSTRING name,[in] boolean value);
+  HRESULT AddBooleanWithFormat([in] HSTRING name,[in] boolean value,[in] LoggingFieldFormat format);
+  HRESULT AddBooleanWithFormatAndTags([in] HSTRING name,[in] boolean value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddBooleanArray([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] boolean *value);
+  HRESULT AddBooleanArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] boolean *value,[in] LoggingFieldFormat format);
+  HRESULT AddBooleanArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] boolean *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddString([in] HSTRING name,[in] HSTRING value);
+  HRESULT AddStringWithFormat([in] HSTRING name,[in] HSTRING value,[in] LoggingFieldFormat format);
+  HRESULT AddStringWithFormatAndTags([in] HSTRING name,[in] HSTRING value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddStringArray([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] HSTRING *value);
+  HRESULT AddStringArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] HSTRING *value,[in] LoggingFieldFormat format);
+  HRESULT AddStringArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] HSTRING *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddGuid([in] HSTRING name,[in] GUID value);
+  HRESULT AddGuidWithFormat([in] HSTRING name,[in] GUID value,[in] LoggingFieldFormat format);
+  HRESULT AddGuidWithFormatAndTags([in] HSTRING name,[in] GUID value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddGuidArray([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] GUID *value);
+  HRESULT AddGuidArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] GUID *value,[in] LoggingFieldFormat format);
+  HRESULT AddGuidArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] GUID *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddDateTime([in] HSTRING name,[in] Windows.Foundation.DateTime value);
+  HRESULT AddDateTimeWithFormat([in] HSTRING name,[in] Windows.Foundation.DateTime value,[in] LoggingFieldFormat format);
+  HRESULT AddDateTimeWithFormatAndTags([in] HSTRING name,[in] Windows.Foundation.DateTime value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddDateTimeArray([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.DateTime *value);
+  HRESULT AddDateTimeArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.DateTime *value,[in] LoggingFieldFormat format);
+  HRESULT AddDateTimeArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.DateTime *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddTimeSpan([in] HSTRING name,[in] Windows.Foundation.TimeSpan value);
+  HRESULT AddTimeSpanWithFormat([in] HSTRING name,[in] Windows.Foundation.TimeSpan value,[in] LoggingFieldFormat format);
+  HRESULT AddTimeSpanWithFormatAndTags([in] HSTRING name,[in] Windows.Foundation.TimeSpan value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddTimeSpanArray([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.TimeSpan *value);
+  HRESULT AddTimeSpanArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.TimeSpan *value,[in] LoggingFieldFormat format);
+  HRESULT AddTimeSpanArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.TimeSpan *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddPoint([in] HSTRING name,[in] Windows.Foundation.Point value);
+  HRESULT AddPointWithFormat([in] HSTRING name,[in] Windows.Foundation.Point value,[in] LoggingFieldFormat format);
+  HRESULT AddPointWithFormatAndTags([in] HSTRING name,[in] Windows.Foundation.Point value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddPointArray([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.Point *value);
+  HRESULT AddPointArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.Point *value,[in] LoggingFieldFormat format);
+  HRESULT AddPointArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.Point *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddSize([in] HSTRING name,[in] Windows.Foundation.Size value);
+  HRESULT AddSizeWithFormat([in] HSTRING name,[in] Windows.Foundation.Size value,[in] LoggingFieldFormat format);
+  HRESULT AddSizeWithFormatAndTags([in] HSTRING name,[in] Windows.Foundation.Size value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddSizeArray([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.Size *value);
+  HRESULT AddSizeArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.Size *value,[in] LoggingFieldFormat format);
+  HRESULT AddSizeArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.Size *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddRect([in] HSTRING name,[in] Windows.Foundation.Rect value);
+  HRESULT AddRectWithFormat([in] HSTRING name,[in] Windows.Foundation.Rect value,[in] LoggingFieldFormat format);
+  HRESULT AddRectWithFormatAndTags([in] HSTRING name,[in] Windows.Foundation.Rect value,[in] LoggingFieldFormat format,[in] INT32 tags);
+  HRESULT AddRectArray([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.Rect *value);
+  HRESULT AddRectArrayWithFormat([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.Rect *value,[in] LoggingFieldFormat format);
+  HRESULT AddRectArrayWithFormatAndTags([in] HSTRING name,[in] UINT32 count,[in,size_is(count)] Windows.Foundation.Rect *value,[in] LoggingFieldFormat format,[in] INT32 tags);
+ }
+ [contract(Windows.Foundation.UniversalApiContract,1.0),activatable(Windows.Foundation.UniversalApiContract,1.0)]
+ runtimeclass LoggingFields { [default] interface ILoggingFields; }
+}

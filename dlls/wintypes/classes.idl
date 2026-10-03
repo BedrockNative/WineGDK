@@ -38,3 +38,6 @@ namespace Windows.Storage.Streams {
     runtimeclass Buffer;
     runtimeclass DataWriter;
 }
+
+import "windows.foundation.diagnostics.idl";
+namespace Windows.Foundation.Diagnostics { runtimeclass LoggingChannel; runtimeclass LoggingChannelOptions; runtimeclass LoggingOptions; runtimeclass LoggingFields; }

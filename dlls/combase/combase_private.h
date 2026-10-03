@@ -115,6 +115,7 @@ HWND apartment_getwindow(const struct apartment *apt);
 HRESULT apartment_createwindowifneeded(struct apartment *apt);
 void apartment_freeunusedlibraries(struct apartment *apt, DWORD unload_delay);
 void apartment_global_cleanup(void);
+void ro_notify_apartment_shutdown(UINT64 oxid);
 OXID apartment_getoxid(const struct apartment *apt);
 HRESULT apartment_disconnectproxies(struct apartment *apt);
 

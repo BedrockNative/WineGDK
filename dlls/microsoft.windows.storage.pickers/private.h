@@ -30,12 +30,15 @@
 
 #include "activation.h"
 
+#define WIDL_using_Windows_Storage_Streams
 #define WIDL_using_Windows_Foundation
 #define WIDL_using_Windows_Foundation_Collections
 #include "windows.foundation.h"
+#ifndef PICKERS_UWP_ONLY
 #define WIDL_using_Microsoft_UI
 #define WIDL_using_Microsoft_Windows_Storage_Pickers
 #include "microsoft.windows.storage.pickers.h"
+#endif
 
 #include "async_private.h"
 
@@ -54,6 +57,17 @@ HRESULT vector_inspectable_create( const struct vector_iids *iids, IVector_IInsp
 HRESULT async_operation_inspectable_create( const GUID *iid, IUnknown *invoker, IUnknown *param, async_operation_callback callback,
                                             IAsyncOperation_IInspectable **out );
 
+#define WIDL_using_Windows_Storage_Streams
+#include "windows.storage.streams.h"
+HRESULT async_operation_buffer_read_create(IUnknown *invoker, IUnknown *param, async_operation_callback callback,
+        IAsyncOperationWithProgress_IBuffer_UINT32 **out);
+HRESULT async_operation_buffer_write_create(IUnknown *invoker, IUnknown *param, async_operation_callback callback,
+        IAsyncOperationWithProgress_UINT32_UINT32 **out);
+HRESULT async_operation_boolean_create(IUnknown *invoker, IUnknown *param, async_operation_callback callback,
+        IAsyncOperation_boolean **out);
+HRESULT file_stream_create(const WCHAR *path, HSTRING content_type, BOOL writable,
+        __x_ABI_CWindows_CStorage_CStreams_CIRandomAccessStream **out);
+
 /* picker.c */
 extern IActivationFactory *file_open_picker_factory;
 extern IActivationFactory *file_save_picker_factory;
@@ -61,10 +75,15 @@ extern IActivationFactory *folder_picker_factory;
 
 /* storagefile.c */
 extern IActivationFactory *storage_file_factory;
+extern IActivationFactory *cached_file_manager_factory;
+extern IActivationFactory *file_io_factory;
+extern IActivationFactory *storage_permissions_factory;
+HRESULT async_action_create(IUnknown *, IUnknown *, async_operation_callback, IAsyncAction **);
 HRESULT storage_file_create_object( const WCHAR *path, IUnknown **out );
 
 /* uwpsave.c */
 extern IActivationFactory *uwp_save_picker_factory;
+extern IActivationFactory *uwp_open_picker_factory;
 
 /* dialog.c */
 enum picker_kind
@@ -78,7 +97,9 @@ enum picker_kind
 struct picker_request
 {
     IUnknown IUnknown_iface;
+    IClosable IClosable_iface;
     LONG ref;
+    LONG cancelled;
     enum picker_kind kind;
     UINT64 window_id;
     PickerLocationId start_location;
@@ -93,15 +114,19 @@ struct picker_request
 HRESULT picker_request_create( enum picker_kind kind, UINT64 window_id, struct picker_request **out );
 WCHAR *hstring_dup( HSTRING str );
 /* Runs the dialog (blocking). On success, paths is a double-NUL-terminated list of
- * Windows paths, or NULL on user cancellation. An unavailable portal returns E_NOTIMPL. */
+ * Windows paths, or NULL on user cancellation. An unavailable portal falls back to Wine's common dialogs. */
 HRESULT picker_run_dialog( struct picker_request *request, WCHAR **paths );
+HRESULT picker_run_fallback_dialog(struct picker_request *request, WCHAR **paths);
 
+#ifndef PICKERS_UWP_ONLY
 HRESULT pick_file_result_create( const WCHAR *path, IPickFileResult **out );
 HRESULT pick_folder_result_create( const WCHAR *path, IPickFolderResult **out );
 
 HRESULT file_type_choices_create( IMap_HSTRING_IVector_HSTRING **out );
 /* builds the request filter lines from the choices map */
 WCHAR *file_type_choices_to_filters( IMap_HSTRING_IVector_HSTRING *map );
+
+#endif
 
 #define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \
     static inline impl_type *impl_from( iface_type *iface )                                        \

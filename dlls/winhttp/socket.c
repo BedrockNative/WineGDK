@@ -37,12 +37,11 @@ WINE_DEFAULT_DEBUG_CHANNEL(winhttp);
 static void socket_handle_closing( struct object_header *hdr )
 {
     struct socket *socket = (struct socket *)hdr;
-    BOOL pending_tasks;
-
-    pending_tasks = cancel_queue( &socket->send_q );
-    pending_tasks = cancel_queue( &socket->recv_q ) || pending_tasks;
-
-    if (pending_tasks) netconn_cancel_io( socket->netconn );
+    cancel_queue( &socket->send_q );
+    cancel_queue( &socket->recv_q );
+    /* Synchronous receives do not appear in the task queues, but also need
+     * to wake up when another thread closes the handle. */
+    netconn_cancel_io( socket->netconn );
 }
 
 static BOOL socket_query_option( struct object_header *hdr, DWORD option, void *buffer, DWORD *buflen )
@@ -585,7 +584,9 @@ DWORD WINAPI WinHttpWebSocketSend( HINTERNET hsocket, WINHTTP_WEB_SOCKET_BUFFER_
     {
         if (validate_buffer_type( type, socket->sending_fragment_type ))
         {
+            AcquireSRWLockExclusive( &socket->send_lock );
             ret = socket_send( socket, type, buf, len, NULL );
+            ReleaseSRWLockExclusive( &socket->send_lock );
         }
         else
         {
@@ -686,29 +687,37 @@ static void task_socket_send_pong( void *ctx, BOOL abort )
 
     TRACE("running %p\n", ctx);
 
-    if (s->complete_async) complete_send_frame( socket, &s->ovr, NULL );
-    else send_frame( socket, SOCKET_OPCODE_PONG, 0, NULL, 0, TRUE, NULL );
+    if (s->complete_async) complete_send_frame( socket, &s->ovr, s->buf );
+    else send_frame( socket, SOCKET_OPCODE_PONG, 0, s->buf, s->len, TRUE, NULL );
 
     send_io_complete( socket );
 }
 
-static DWORD socket_send_pong( struct socket *socket )
+static DWORD socket_send_pong( struct socket *socket, const char *buf, DWORD len )
 {
     BOOL async_send, complete_async = FALSE;
     struct socket_send *s;
     DWORD ret = 0;
 
     if (!(socket->hdr.flags & WINHTTP_FLAG_ASYNC))
-        return send_frame( socket, SOCKET_OPCODE_PONG, 0, NULL, 0, TRUE, NULL );
+    {
+        AcquireSRWLockExclusive( &socket->send_lock );
+        ret = send_frame( socket, SOCKET_OPCODE_PONG, 0, buf, len, TRUE, NULL );
+        ReleaseSRWLockExclusive( &socket->send_lock );
+        return ret;
+    }
 
-    if (!(s = malloc( sizeof(*s) ))) return ERROR_OUTOFMEMORY;
+    if (!(s = malloc( sizeof(*s) + len ))) return ERROR_OUTOFMEMORY;
 
+    s->buf = s + 1;
+    s->len = len;
+    if (len) memcpy( s + 1, buf, len );
     AcquireSRWLockExclusive( &socket->send_lock );
     async_send = InterlockedIncrement( &socket->pending_sends ) > 1;
     if (!async_send)
     {
         memset( &s->ovr, 0, sizeof(s->ovr) );
-        if ((ret = send_frame( socket, SOCKET_OPCODE_PONG, 0, NULL, 0, TRUE, &s->ovr )) == WSA_IO_PENDING)
+        if ((ret = send_frame( socket, SOCKET_OPCODE_PONG, 0, s->buf, s->len, TRUE, &s->ovr )) == WSA_IO_PENDING)
         {
             async_send = TRUE;
             complete_async = TRUE;
@@ -774,7 +783,14 @@ static DWORD handle_control_frame( struct socket *socket )
     switch (socket->opcode)
     {
     case SOCKET_OPCODE_PING:
-        return socket_send_pong( socket );
+    {
+        char payload[125];
+        DWORD count, size = socket->read_size;
+        if (size > sizeof(payload)) return ERROR_WINHTTP_INVALID_SERVER_RESPONSE;
+        if ((ret = receive_bytes( socket, payload, size, &count, TRUE ))) return ret;
+        socket->read_size = 0;
+        return socket_send_pong( socket, payload, size );
+    }
 
     case SOCKET_OPCODE_PONG:
         return socket_drain( socket );
@@ -867,7 +883,7 @@ static DWORD socket_receive( struct socket *socket, void *buf, DWORD len, DWORD 
                 if (!(socket->opcode & CONTROL_BIT) || (ret = handle_control_frame( socket ))
                     || socket->opcode == SOCKET_OPCODE_CLOSE) break;
             }
-            else if (ret == WSAETIMEDOUT) ret = socket_send_pong( socket );
+            else if (ret == WSAETIMEDOUT) ret = socket_send_pong( socket, NULL, 0 );
             if (ret) break;
         }
     }
@@ -1027,7 +1043,12 @@ static DWORD send_socket_shutdown( struct socket *socket, USHORT status, const v
     if (socket->state < SOCKET_STATE_SHUTDOWN) socket->state = SOCKET_STATE_SHUTDOWN;
 
     if (!(socket->hdr.flags & WINHTTP_FLAG_ASYNC))
-        return send_frame( socket, SOCKET_OPCODE_CLOSE, status, reason, len, TRUE, NULL );
+    {
+        AcquireSRWLockExclusive( &socket->send_lock );
+        ret = send_frame( socket, SOCKET_OPCODE_CLOSE, status, reason, len, TRUE, NULL );
+        ReleaseSRWLockExclusive( &socket->send_lock );
+        return ret;
+    }
 
     if (!(s = malloc( sizeof(*s) ))) return FALSE;
 

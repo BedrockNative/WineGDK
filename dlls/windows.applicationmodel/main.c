@@ -18,7 +18,7 @@
  */
 
 #include "initguid.h"
-#include "private.h"
+#include "store_private.h"
 
 #include "wine/debug.h"
 
@@ -43,6 +43,12 @@ HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **fa
     else if (!wcscmp( buffer, RuntimeClass_Windows_ApplicationModel_DesignMode ))
         IActivationFactory_QueryInterface( design_mode_factory, &IID_IActivationFactory, (void **)factory );
 
+    if (!wcscmp(buffer, RuntimeClass_Windows_ApplicationModel_Store_CurrentApp))
+        IActivationFactory_QueryInterface(currentapp_factory,&IID_IActivationFactory,(void **)factory);
+    if (!wcscmp(buffer, RuntimeClass_Windows_ApplicationModel_Resources_Core_ResourceContext))
+        IActivationFactory_QueryInterface(resource_context_factory, &IID_IActivationFactory, (void **)factory);
+    if (!wcscmp(buffer, RuntimeClass_Windows_ApplicationModel_ExtendedExecution_ExtendedExecutionSession))
+        IActivationFactory_QueryInterface(extendedexecution_factory, &IID_IActivationFactory, (void **)factory);
     if (*factory) return S_OK;
     return CLASS_E_CLASSNOTAVAILABLE;
 }

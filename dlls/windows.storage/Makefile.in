@@ -1,11 +1,15 @@
 MODULE  = windows.storage.dll
-IMPORTS = shell32 shlwapi kernelbase rpcrt4 combase $(CXXABI_PE_LIBS) $(CXX_PE_LIBS) vcruntime140
+IMPORTLIB = windows.storage
+IMPORTS = propsys uuid shell32 shlwapi kernelbase rpcrt4 combase $(CXXABI_PE_LIBS) $(CXX_PE_LIBS) vcruntime140
 
 SOURCES = \
 	classes.idl \
 	provider.idl \
 	main.c \
 	streams.cpp \
+	data_streams.c \
+	streams_async.c \
+	streams_async_private.idl \
 	\
 	WineCoreUAP/Foundation/IWineAsync.cpp \
 	\

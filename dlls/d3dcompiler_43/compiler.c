@@ -80,13 +80,16 @@ static HRESULT WINAPI d3dcompiler_include_from_file_open(ID3DInclude *iface, D3D
 {
     struct d3dcompiler_include_from_file *include = impl_from_ID3DInclude(iface);
     char *fullpath, *buffer = NULL, current_dir[MAX_PATH + 1];
-    const char *initial_dir;
+    const char *initial_dir, *slash;
     SIZE_T size;
     HANDLE file;
     ULONG read;
     DWORD len;
 
-    if ((initial_dir = strrchr(include->initial_filename, '\\')))
+    initial_dir = strrchr(include->initial_filename, '\\');
+    slash = strrchr(include->initial_filename, '/');
+    if (slash && (!initial_dir || slash > initial_dir)) initial_dir = slash;
+    if (initial_dir)
     {
         len = initial_dir - include->initial_filename + 1;
         initial_dir = include->initial_filename;

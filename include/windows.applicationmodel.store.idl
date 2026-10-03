@@ -1,0 +1,71 @@
+/* Legacy Store ABI. LGPL-2.1-or-later. */
+#ifdef __WIDL__
+#pragma winrt ns_prefix
+#endif
+import "inspectable.idl";
+import "asyncinfo.idl";
+import "eventtoken.idl";
+import "windowscontracts.idl";
+import "windows.foundation.idl";
+namespace Windows.ApplicationModel.Store {
+    runtimeclass CurrentApp;
+    runtimeclass LicenseInformation;
+    runtimeclass ProductLicense;
+    runtimeclass ListingInformation;
+    runtimeclass ProductListing;
+    declare {
+        interface Windows.Foundation.Collections.IMapView<HSTRING, Windows.ApplicationModel.Store.ProductLicense *>;
+        interface Windows.Foundation.Collections.IMapView<HSTRING, Windows.ApplicationModel.Store.ProductListing *>;
+        interface Windows.Foundation.IAsyncOperation<Windows.ApplicationModel.Store.ListingInformation *>;
+        interface Windows.Foundation.AsyncOperationCompletedHandler<Windows.ApplicationModel.Store.ListingInformation *>;
+        interface Windows.Foundation.IAsyncOperation<HSTRING>;
+    }
+    [uuid(d4a50255-1369-4c36-832f-6f2d88e3659b)]
+    delegate HRESULT LicenseChangedEventHandler();
+    [exclusiveto(Windows.ApplicationModel.Store.ProductLicense), uuid(363308c7-2bcf-4c0e-8f2f-e808aaa8f99d)]
+    interface IProductLicense : IInspectable {
+        [propget] HRESULT ProductId([out, retval] HSTRING *value);
+        [propget] HRESULT IsActive([out, retval] boolean *value);
+        [propget] HRESULT ExpirationDate([out, retval] Windows.Foundation.DateTime *value);
+    }
+    [exclusiveto(Windows.ApplicationModel.Store.ProductListing), uuid(45a7d6ad-c750-4d9c-947c-b00dcbf9e9c2)]
+    interface IProductListing : IInspectable {
+        [propget] HRESULT ProductId([out, retval] HSTRING *value);
+        [propget] HRESULT FormattedPrice([out, retval] HSTRING *value);
+        [propget] HRESULT Name([out, retval] HSTRING *value);
+    }
+    [exclusiveto(Windows.ApplicationModel.Store.ListingInformation), uuid(588b4abf-bc74-4383-b78c-99606323dece)]
+    interface IListingInformation : IInspectable {
+        [propget] HRESULT CurrentMarket([out, retval] HSTRING *value);
+        [propget] HRESULT Description([out, retval] HSTRING *value);
+        [propget] HRESULT ProductListings([out, retval] Windows.Foundation.Collections.IMapView<HSTRING, Windows.ApplicationModel.Store.ProductListing *> **value);
+        [propget] HRESULT FormattedPrice([out, retval] HSTRING *value);
+        [propget] HRESULT Name([out, retval] HSTRING *value);
+        [propget] HRESULT AgeRating([out, retval] UINT32 *value);
+    }
+    [exclusiveto(Windows.ApplicationModel.Store.LicenseInformation), uuid(8eb7dc30-f170-4ed5-8e21-1516da3fd367)]
+    interface ILicenseInformation : IInspectable {
+        [propget] HRESULT ProductLicenses([out, retval] Windows.Foundation.Collections.IMapView<HSTRING, Windows.ApplicationModel.Store.ProductLicense *> **value);
+        [propget] HRESULT IsActive([out, retval] boolean *value);
+        [propget] HRESULT IsTrial([out, retval] boolean *value);
+        [propget] HRESULT ExpirationDate([out, retval] Windows.Foundation.DateTime *value);
+        [eventadd] HRESULT LicenseChanged([in] Windows.ApplicationModel.Store.LicenseChangedEventHandler *handler, [out, retval] EventRegistrationToken *token);
+        [eventremove] HRESULT LicenseChanged([in] EventRegistrationToken token);
+    }
+    [exclusiveto(Windows.ApplicationModel.Store.CurrentApp), uuid(d52dc065-da3f-4685-995e-9b482eb5e603)]
+    interface ICurrentApp : IInspectable {
+        [propget] HRESULT LicenseInformation([out, retval] Windows.ApplicationModel.Store.LicenseInformation **value);
+        [propget] HRESULT LinkUri([out, retval] Windows.Foundation.Uri **value);
+        [propget] HRESULT AppId([out, retval] GUID *value);
+        HRESULT RequestAppPurchaseAsync([in] boolean include_receipt, [out, retval] Windows.Foundation.IAsyncOperation<HSTRING> **value);
+        HRESULT RequestProductPurchaseAsync([in] HSTRING product_id, [in] boolean include_receipt, [out, retval] Windows.Foundation.IAsyncOperation<HSTRING> **value);
+        HRESULT LoadListingInformationAsync([out, retval] Windows.Foundation.IAsyncOperation<Windows.ApplicationModel.Store.ListingInformation *> **value);
+        HRESULT GetAppReceiptAsync([out, retval] Windows.Foundation.IAsyncOperation<HSTRING> **value);
+        HRESULT GetProductReceiptAsync([in] HSTRING product_id, [out, retval] Windows.Foundation.IAsyncOperation<HSTRING> **value);
+    }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0)] runtimeclass ProductLicense { [default] interface Windows.ApplicationModel.Store.IProductLicense; }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0)] runtimeclass ProductListing { [default] interface Windows.ApplicationModel.Store.IProductListing; }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0)] runtimeclass ListingInformation { [default] interface Windows.ApplicationModel.Store.IListingInformation; }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0)] runtimeclass LicenseInformation { [default] interface Windows.ApplicationModel.Store.ILicenseInformation; }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0), static(Windows.ApplicationModel.Store.ICurrentApp, Windows.Foundation.UniversalApiContract, 1.0)] runtimeclass CurrentApp { }
+}

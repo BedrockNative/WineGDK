@@ -60,6 +60,8 @@
 EXTERN_C IActivationFactory *random_access_stream_reference_factory;
 EXTERN_C IActivationFactory *memory_stream_activation_factory;
 EXTERN_C IActivationFactory *storage_folder_factory;
+EXTERN_C IActivationFactory *data_reader_factory;
+EXTERN_C IActivationFactory *data_writer_factory;
 
 struct async_operation_iids
 {

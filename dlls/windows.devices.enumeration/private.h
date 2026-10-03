@@ -40,6 +40,8 @@
 #include "windows.foundation.h"
 #define WIDL_using_Windows_Devices_Enumeration
 #include "windows.devices.enumeration.h"
+#define WIDL_using_Windows_Devices_Enumeration_Pnp
+#include "windows.devices.enumeration.pnp.h"
 
 #include "wine/list.h"
 
@@ -55,6 +57,7 @@ struct vector_iids
 };
 
 extern IActivationFactory *device_access_factory;
+extern IActivationFactory *pnp_factory;
 
 HRESULT typed_event_handlers_append( struct list *list, ITypedEventHandler_IInspectable_IInspectable *handler, EventRegistrationToken *token );
 HRESULT typed_event_handlers_remove( struct list *list, EventRegistrationToken *token );
@@ -66,6 +69,7 @@ extern HRESULT async_operation_inspectable_create( const GUID *iid, IUnknown *in
 extern HRESULT async_action_create( IUnknown *invoker, async_operation_callback callback, IAsyncAction **out );
 
 extern HRESULT vector_create( const struct vector_iids *iids, void **out );
+extern HRESULT device_information_update_create( const DEV_OBJECT *obj, IDeviceInformationUpdate **update );
 extern HRESULT device_information_create( const DEV_OBJECT *obj, IDeviceInformation **info );
 extern HRESULT async( IUnknown *invoker, IUnknown *param, PROPVARIANT *result, BOOL called_async );
 

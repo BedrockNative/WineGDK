@@ -28,3 +28,10 @@ namespace Microsoft.Windows.Storage.Pickers {
     runtimeclass FileSavePicker;
     runtimeclass FolderPicker;
 }
+
+import "windows.storage.pickers.idl";
+namespace Windows.Storage.Pickers { runtimeclass FileOpenPicker; }
+namespace Windows.Storage { runtimeclass CachedFileManager; runtimeclass FileIO; }
+
+import "windows.storage.accesscache.idl";
+namespace Windows.Storage.AccessCache { runtimeclass StorageApplicationPermissions; }

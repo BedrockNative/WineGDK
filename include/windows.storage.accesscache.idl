@@ -1,0 +1,47 @@
+/* WinRT access-cache contracts. SPDX-License-Identifier: LGPL-2.1-or-later */
+#ifdef __WIDL__
+#pragma makedep header install
+#pragma winrt ns_prefix
+#endif
+import "windows.storage.idl";
+namespace Windows.Storage.AccessCache {
+    typedef enum AccessCacheOptions AccessCacheOptions;
+    typedef struct AccessListEntry AccessListEntry;
+    interface IStorageItemAccessList;
+    interface IStorageItemMostRecentlyUsedList;
+    runtimeclass StorageApplicationPermissions;
+    [flags] enum AccessCacheOptions { None=0, DisallowUserInput=1, FastLocationsOnly=2,
+        UseReadOnlyCachedCopy=4, SuppressAccessTimeUpdate=8 };
+    struct AccessListEntry { HSTRING Token; HSTRING Metadata; };
+    declare { interface Windows.Foundation.Collections.IVectorView<Windows.Storage.AccessCache.AccessListEntry>; }
+    [uuid(4391dfaa-d033-48f9-8060-3ec847d2e3f1),exclusiveto(StorageApplicationPermissions)]
+    interface IStorageApplicationPermissionsStatics : IInspectable {
+        [propget] HRESULT FutureAccessList([out,retval] Windows.Storage.AccessCache.IStorageItemAccessList **value);
+        [propget] HRESULT MostRecentlyUsedList([out,retval] Windows.Storage.AccessCache.IStorageItemMostRecentlyUsedList **value);
+    }
+    [uuid(2caff6ad-de90-47f5-b2c3-dd36c9fdd453)]
+    interface IStorageItemAccessList : IInspectable {
+        HRESULT AddOverloadDefaultMetadata([in] Windows.Storage.IStorageItem *file,[out,retval] HSTRING *token);
+        HRESULT Add([in] Windows.Storage.IStorageItem *file,[in] HSTRING metadata,[out,retval] HSTRING *token);
+        HRESULT AddOrReplaceOverloadDefaultMetadata([in] HSTRING token,[in] Windows.Storage.IStorageItem *file);
+        HRESULT AddOrReplace([in] HSTRING token,[in] Windows.Storage.IStorageItem *file,[in] HSTRING metadata);
+        HRESULT GetItemAsync([in] HSTRING token,[out,retval] Windows.Foundation.IAsyncOperation<Windows.Storage.IStorageItem *> **operation);
+        HRESULT GetFileAsync([in] HSTRING token,[out,retval] Windows.Foundation.IAsyncOperation<Windows.Storage.StorageFile *> **operation);
+        HRESULT GetFolderAsync([in] HSTRING token,[out,retval] Windows.Foundation.IAsyncOperation<Windows.Storage.StorageFolder *> **operation);
+        HRESULT GetItemWithOptionsAsync([in] HSTRING token,[in] Windows.Storage.AccessCache.AccessCacheOptions options,
+            [out,retval] Windows.Foundation.IAsyncOperation<Windows.Storage.IStorageItem *> **operation);
+        HRESULT GetFileWithOptionsAsync([in] HSTRING token,[in] Windows.Storage.AccessCache.AccessCacheOptions options,
+            [out,retval] Windows.Foundation.IAsyncOperation<Windows.Storage.StorageFile *> **operation);
+        HRESULT GetFolderWithOptionsAsync([in] HSTRING token,[in] Windows.Storage.AccessCache.AccessCacheOptions options,
+            [out,retval] Windows.Foundation.IAsyncOperation<Windows.Storage.StorageFolder *> **operation);
+        HRESULT Remove([in] HSTRING token);
+        HRESULT ContainsItem([in] HSTRING token,[out,retval] boolean *value);
+        HRESULT Clear();
+        HRESULT CheckAccess([in] Windows.Storage.IStorageItem *file,[out,retval] boolean *value);
+        [propget] HRESULT Entries([out,retval] Windows.Foundation.Collections.IVectorView<Windows.Storage.AccessCache.AccessListEntry> **entries);
+        [propget] HRESULT MaximumItemsAllowed([out,retval] UINT32 *value);
+    }
+    [contract(Windows.Foundation.UniversalApiContract,1.0),marshaling_behavior(agile),
+     static(Windows.Storage.AccessCache.IStorageApplicationPermissionsStatics,Windows.Foundation.UniversalApiContract,1.0)]
+    runtimeclass StorageApplicationPermissions {};
+}

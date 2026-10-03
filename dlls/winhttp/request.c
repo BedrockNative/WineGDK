@@ -370,6 +370,9 @@ struct gzip_stream
     z_stream zstream;
     struct read_buffer buf;
     BOOL end_of_data;
+    BOOL detect_deflate;
+    BYTE deflate_header[2];
+    unsigned int deflate_header_size;
 };
 
 static BOOL gzip_end_of_data( struct data_stream *stream, struct request *request )
@@ -384,6 +387,7 @@ static DWORD gzip_fill_buffer( struct data_stream *stream, struct request *reque
     struct gzip_stream *gzip_stream = (struct gzip_stream *)stream;
     z_stream *zstream = &gzip_stream->zstream;
     DWORD size, to_read, offset = 0, ret = ERROR_SUCCESS;
+    BOOL header_input;
     int zres;
 
     if (gzip_end_of_data( stream, request )) return ERROR_SUCCESS;
@@ -415,8 +419,36 @@ static DWORD gzip_fill_buffer( struct data_stream *stream, struct request *reque
             }
         }
 
-        zstream->next_in = gzip_stream->buf.buf + gzip_stream->buf.pos;
-        zstream->avail_in = gzip_stream->buf.size;
+        header_input = gzip_stream->detect_deflate;
+        if (header_input)
+        {
+            unsigned int header;
+
+            /* Some servers send raw DEFLATE under Content-Encoding: deflate.
+             * Keep the prefix across short reads, then replay it into zlib. */
+            while (gzip_stream->deflate_header_size < 2 && gzip_stream->buf.size)
+            {
+                gzip_stream->deflate_header[gzip_stream->deflate_header_size++] =
+                    gzip_stream->buf.buf[gzip_stream->buf.pos++];
+                gzip_stream->buf.size--;
+            }
+            if (gzip_stream->deflate_header_size < 2) continue;
+            header = (gzip_stream->deflate_header[0] << 8) | gzip_stream->deflate_header[1];
+            if ((gzip_stream->deflate_header[0] & 0x0f) != Z_DEFLATED ||
+                (gzip_stream->deflate_header[0] >> 4) > 7 || header % 31)
+            {
+                if (inflateReset2( zstream, -15 ) != Z_OK) return ERROR_INVALID_DATA;
+                TRACE( "decoding raw DEFLATE response\n" );
+            }
+            gzip_stream->detect_deflate = FALSE;
+            zstream->next_in = gzip_stream->deflate_header;
+            zstream->avail_in = 2;
+        }
+        else
+        {
+            zstream->next_in = gzip_stream->buf.buf + gzip_stream->buf.pos;
+            zstream->avail_in = gzip_stream->buf.size;
+        }
         zstream->next_out = (Bytef *)buf->buf + offset;
         zstream->avail_out = to_read;
         zres = inflate( &gzip_stream->zstream, 0 );
@@ -424,10 +456,25 @@ static DWORD gzip_fill_buffer( struct data_stream *stream, struct request *reque
         buf->size += size;
         to_read -= size;
         offset += size;
-        gzip_stream->buf.size -= zstream->next_in - (gzip_stream->buf.buf + gzip_stream->buf.pos);
-        gzip_stream->buf.pos = zstream->next_in - gzip_stream->buf.buf;
+        if (!header_input)
+        {
+            gzip_stream->buf.size -= zstream->next_in - (gzip_stream->buf.buf + gzip_stream->buf.pos);
+            gzip_stream->buf.pos = zstream->next_in - gzip_stream->buf.buf;
+        }
         if (zres == Z_STREAM_END)
         {
+            /* The compressed stream can end before the final HTTP chunk arrives.
+             * Consume that framing before finished_reading() pools the socket,
+             * or the next response starts with the previous chunk terminator. */
+            if (gzip_stream->parent->vtbl == &chunked_stream_vtbl)
+            {
+                while (!gzip_stream->parent->vtbl->end_of_data( gzip_stream->parent, request ))
+                {
+                    gzip_stream->buf.pos = gzip_stream->buf.size = 0;
+                    if ((ret = gzip_stream->parent->vtbl->fill_buffer( gzip_stream->parent, request,
+                                                                     &gzip_stream->buf ))) return ret;
+                }
+            }
             TRACE( "end of data\n" );
             gzip_stream->end_of_data = TRUE;
             inflateEnd( zstream );
@@ -2796,6 +2843,7 @@ static DWORD init_gzip_stream( struct request *request, BOOL is_gzip )
     gzip_stream->data_stream.vtbl = &gzip_stream_vtbl;
     gzip_stream->zstream.zalloc = gzip_zalloc;
     gzip_stream->zstream.zfree = gzip_zfree;
+    gzip_stream->detect_deflate = !is_gzip;
 
     zres = inflateInit2( &gzip_stream->zstream, is_gzip ? 31 : 15 );
     if (zres != Z_OK)
@@ -2977,6 +3025,17 @@ static DWORD read_reply( struct request *request )
 
         TRACE( "version [%s] status code [%s] status text [%s]\n", debugstr_an(buffer, len),
                debugstr_w(status_code), debugstr_a(status_text) );
+
+        if (!wcscmp( status_code, L"100" ))
+        {
+            /* The interim response has its own header section. Consume it,
+             * including the empty line, before reading the final status. */
+            do
+            {
+                buflen = MAX_REPLY_LEN;
+                if ((ret = read_line( request, buffer, &buflen ))) return ret;
+            } while (*buffer);
+        }
 
     } while (!wcscmp( status_code, L"100" )); /* ignore "100 Continue" responses */
 

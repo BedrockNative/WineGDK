@@ -33,6 +33,8 @@ namespace Windows.Storage.Streams
 {
     runtimeclass RandomAccessStreamReference;
     runtimeclass InMemoryRandomAccessStream;
+    runtimeclass DataReader;
+    runtimeclass DataWriter;
 }
 
 namespace Windows.Storage

@@ -1,5 +1,5 @@
 MODULE  = windows.ui.core.textinput.dll
-IMPORTS = combase
+IMPORTS = combase user32 comctl32
 
 SOURCES = \
 	classes.idl \
@@ -8,4 +8,5 @@ SOURCES = \
 	inputview.c \
 	weakref.c \
 	vector.c \
-	editcontext.c
+	editcontext.c \
+	textbridge.c

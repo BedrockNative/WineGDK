@@ -26,3 +26,7 @@ import "windows.ui.idl";
 namespace Windows.UI {
     runtimeclass ColorHelper;
 }
+
+import "windows.ui.xaml.idl";
+namespace Windows.UI.Xaml { runtimeclass Application; runtimeclass Window; }
+namespace Windows.UI.Xaml.Media { runtimeclass CompositionTarget; }

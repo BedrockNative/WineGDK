@@ -1,0 +1,17 @@
+/* Holographic application capability detection. LGPL-2.1-or-later. */
+#ifdef __WIDL__
+#pragma winrt ns_prefix
+#endif
+import "windows.applicationmodel.activation.idl";
+namespace Windows.ApplicationModel.Preview.Holographic {
+    [uuid(fe038691-2a3a-45a9-a208-7bed691919f3)]
+    interface IHolographicApplicationPreviewStatics : IInspectable
+    {
+        HRESULT IsCurrentViewPresentedOnHolographicDisplay([out, retval] boolean *value);
+        HRESULT IsHolographicActivation([in] Windows.ApplicationModel.Activation.IActivatedEventArgs *args,
+                                       [out, retval] boolean *value);
+    }
+    [contract(Windows.Foundation.UniversalApiContract, 4.0),
+     static(Windows.ApplicationModel.Preview.Holographic.IHolographicApplicationPreviewStatics, Windows.Foundation.UniversalApiContract, 4.0)]
+    runtimeclass HolographicApplicationPreview { }
+}

@@ -5,6 +5,8 @@ IMPORTS   = combase
 SOURCES = \
 	buffer.c \
 	classes.idl \
+	diagnostics.c \
+	logging_fields.c \
 	main.c \
 	map.c \
 	propertyset.c \

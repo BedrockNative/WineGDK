@@ -289,7 +289,13 @@ static HRESULT uwp_pick_save_async( IUnknown *invoker, IUnknown *param, PROPVARI
     handle = CreateFileW( paths, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
                           FILE_ATTRIBUTE_NORMAL, NULL );
     if (handle != INVALID_HANDLE_VALUE) CloseHandle( handle );
-    else WARN( "could not create %s, error %lu.\n", debugstr_w( paths ), GetLastError() );
+    else
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        WARN("could not create %s, result %#lx.\n", debugstr_w(paths), hr);
+        free(paths);
+        return hr;
+    }
 
     hr = storage_file_create_object( paths, &file );
     free( paths );

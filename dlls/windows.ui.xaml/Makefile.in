@@ -1,7 +1,16 @@
 MODULE  = windows.ui.xaml.dll
-IMPORTS = combase
+IMPORTS = combase user32
 
 SOURCES = \
+	application.c \
 	classes.idl \
 	color_helper.c \
+	composition.c \
+	dispatcher.c \
+	input.c \
+	controls.c \
+	controls.rc \
+	window.c \
+	xbf.c \
+	vector.c \
 	main.c

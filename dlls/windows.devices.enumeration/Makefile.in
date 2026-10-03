@@ -10,5 +10,6 @@ SOURCES = \
 	event_handlers.c \
 	information.c \
 	main.c \
+	pnp.c \
 	vector.c \
 	weakref.c

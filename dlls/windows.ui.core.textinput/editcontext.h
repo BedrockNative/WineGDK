@@ -21,11 +21,24 @@
 #define EDITCONTEXT_H
 
 #include "private.h"
+#include "wine/winrt_events.h"
 
 struct core_text_edit_context
 {
     ICoreTextEditContext ICoreTextEditContext_iface;
     LONG ref;
+    DWORD thread;
+    HWND hwnd;
+    HSTRING name;
+    CoreTextInputScope scope;
+    CoreTextInputPaneDisplayPolicy policy;
+    boolean read_only;
+    CoreTextRange selection;
+    unsigned int selection_version;
+    struct winrt_event events[9];
 };
+
+HRESULT edit_context_focus(struct core_text_edit_context *context);
+void edit_context_blur(struct core_text_edit_context *context);
 
 #endif

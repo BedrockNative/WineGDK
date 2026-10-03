@@ -616,6 +616,8 @@ HRESULT WINAPI DllGetClassObject(REFCLSID clsid, REFIID riid, void **out)
     return CLASS_E_CLASSNOTAVAILABLE;
 }
 
+extern IActivationFactory *timer_factory;
+
 HRESULT WINAPI DllGetActivationFactory(HSTRING classid, IActivationFactory **factory)
 {
     const WCHAR *name = WindowsGetStringRawBuffer(classid, NULL);
@@ -628,6 +630,12 @@ HRESULT WINAPI DllGetActivationFactory(HSTRING classid, IActivationFactory **fac
     {
         *factory = &threadpool_factory.IActivationFactory_iface;
         IUnknown_AddRef(*factory);
+    }
+
+    if (!wcscmp(name, RuntimeClass_Windows_System_Threading_ThreadPoolTimer))
+    {
+        *factory = timer_factory;
+        IActivationFactory_AddRef(*factory);
     }
 
     if (*factory) return S_OK;

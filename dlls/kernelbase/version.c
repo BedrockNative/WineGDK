@@ -37,6 +37,7 @@
 #include "winternl.h"
 #include "winerror.h"
 #include "appmodel.h"
+#include "winreg.h"
 
 #include "kernelbase.h"
 #include "wine/debug.h"
@@ -1546,22 +1547,63 @@ BOOL WINAPI GetVersionExW( OSVERSIONINFOW *info )
     return TRUE;
 }
 
+/* Parse loose-package manifests in a higher-level module, outside the loader lock. */
+static LONG (WINAPI *get_manifest_property)(const WCHAR *, UINT32 *, WCHAR *);
+static INIT_ONCE manifest_module_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK load_manifest_module( INIT_ONCE *once, void *param, void **context )
+{
+    HMODULE module = LoadLibraryExW(L"appxdeploymentclient.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (module) get_manifest_property = (void *)GetProcAddress(module, "__wine_get_package_property");
+    /* Keep the module and its immutable process identity alive. */
+    return TRUE;
+}
+static LONG manifest_package_string( const WCHAR *value, UINT32 *length, WCHAR *buffer )
+{
+    InitOnceExecuteOnce(&manifest_module_once, load_manifest_module, NULL, NULL);
+    return get_manifest_property ? get_manifest_property(value, length, buffer) : APPMODEL_ERROR_NO_PACKAGE;
+}
+
 /***********************************************************************
  *         GetCurrentApplicationUserModelId   (kernelbase.@)
  */
 LONG WINAPI /* DECLSPEC_HOTPATCH */ GetCurrentApplicationUserModelId( UINT32 *length, WCHAR *id )
 {
-    FIXME( "(%p %p): stub\n", length, id );
-    return APPMODEL_ERROR_NO_APPLICATION;
+    LONG ret;
+    if (!length || (*length && !id)) return ERROR_INVALID_PARAMETER;
+    ret = manifest_package_string(L"ApplicationUserModelId", length, id);
+    return ret == APPMODEL_ERROR_NO_PACKAGE ? APPMODEL_ERROR_NO_APPLICATION : ret;
 }
 
 /***********************************************************************
  *         GetCurrentPackageFamilyName   (kernelbase.@)
  */
+static LONG current_package_string( const WCHAR *value, UINT32 *length, WCHAR *buffer )
+{
+    WCHAR executable[MAX_PATH], key[MAX_PATH + 40], *name;
+    DWORD size = 0, capacity;
+    LONG ret;
+
+    if (!length || (*length && !buffer)) return ERROR_INVALID_PARAMETER;
+    ret = manifest_package_string(value, length, buffer);
+    if (ret != APPMODEL_ERROR_NO_PACKAGE) return ret;
+    if (!GetModuleFileNameW(NULL, executable, ARRAY_SIZE(executable)) ||
+        wcslen(executable) >= ARRAY_SIZE(executable) - 1) return APPMODEL_ERROR_NO_PACKAGE;
+    name = wcsrchr(executable, '\\');
+    name = name ? name + 1 : executable;
+    swprintf(key, ARRAY_SIZE(key), L"Software\\Wine\\AppDefaults\\%s", name);
+    ret = RegGetValueW(HKEY_CURRENT_USER, key, value, RRF_RT_REG_SZ, NULL, NULL, &size);
+    if (ret == ERROR_FILE_NOT_FOUND || ret == ERROR_PATH_NOT_FOUND) return APPMODEL_ERROR_NO_PACKAGE;
+    if (ret) return ret;
+    if (size <= sizeof(WCHAR)) return APPMODEL_ERROR_NO_PACKAGE;
+    capacity = *length;
+    *length = size / sizeof(WCHAR);
+    if (capacity < *length) return ERROR_INSUFFICIENT_BUFFER;
+    return RegGetValueW(HKEY_CURRENT_USER, key, value, RRF_RT_REG_SZ, NULL, buffer, &size);
+}
+
 LONG WINAPI /* DECLSPEC_HOTPATCH */ GetCurrentPackageFamilyName( UINT32 *length, WCHAR *name )
 {
-    FIXME( "(%p %p): stub\n", length, name );
-    return APPMODEL_ERROR_NO_PACKAGE;
+    return current_package_string(L"PackageFamilyName", length, name);
 }
 
 
@@ -1570,8 +1612,7 @@ LONG WINAPI /* DECLSPEC_HOTPATCH */ GetCurrentPackageFamilyName( UINT32 *length,
  */
 LONG WINAPI /* DECLSPEC_HOTPATCH */ GetCurrentPackageFullName( UINT32 *length, WCHAR *name )
 {
-    FIXME( "(%p %p): stub\n", length, name );
-    return APPMODEL_ERROR_NO_PACKAGE;
+    return current_package_string(L"PackageFullName", length, name);
 }
 
 
@@ -1580,8 +1621,30 @@ LONG WINAPI /* DECLSPEC_HOTPATCH */ GetCurrentPackageFullName( UINT32 *length, W
  */
 LONG WINAPI /* DECLSPEC_HOTPATCH */ GetCurrentPackageId( UINT32 *len, BYTE *buffer )
 {
-    FIXME( "(%p %p): stub\n", len, buffer );
-    return APPMODEL_ERROR_NO_PACKAGE;
+    WCHAR *full_name;
+    UINT32 count = 0, size = 0, publisher_length = 0, capacity;
+    LONG ret;
+    if (!len || (*len && !buffer)) return ERROR_INVALID_PARAMETER;
+    if ((ret = GetCurrentPackageFullName(&count, NULL)) != ERROR_INSUFFICIENT_BUFFER) return ret;
+    if (!(full_name = HeapAlloc(GetProcessHeap(), 0, count * sizeof(WCHAR)))) return ERROR_NOT_ENOUGH_MEMORY;
+    ret = GetCurrentPackageFullName(&count, full_name);
+    if (ret) goto done;
+    ret = PackageIdFromFullName(full_name, 0, &size, NULL);
+    if (ret != ERROR_INSUFFICIENT_BUFFER) goto done;
+    if (current_package_string(L"PackagePublisher", &publisher_length, NULL) != ERROR_INSUFFICIENT_BUFFER)
+        publisher_length = 0;
+    capacity = *len;
+    *len = size + publisher_length * sizeof(WCHAR);
+    if (capacity < *len) { ret = ERROR_INSUFFICIENT_BUFFER; goto done; }
+    if (!(ret = PackageIdFromFullName(full_name, 0, &size, buffer)) && publisher_length)
+    {
+        WCHAR *publisher = (WCHAR *)(buffer + size);
+        ret = current_package_string(L"PackagePublisher", &publisher_length, publisher);
+        if (!ret) ((PACKAGE_ID *)buffer)->publisher = publisher;
+    }
+done:
+    HeapFree(GetProcessHeap(), 0, full_name);
+    return ret;
 }
 
 /***********************************************************************
@@ -1598,8 +1661,30 @@ LONG WINAPI GetCurrentPackageInfo( const UINT32 flags, UINT32 *buffer_size, BYTE
  */
 LONG WINAPI /* DECLSPEC_HOTPATCH */ GetCurrentPackagePath( UINT32 *length, WCHAR *path )
 {
-    FIXME( "(%p %p): stub\n", length, path );
-    return APPMODEL_ERROR_NO_PACKAGE;
+    WCHAR executable[MAX_PATH], key[MAX_PATH + 48], *name;
+    DWORD size, capacity;
+    LONG ret;
+
+    if (!length || (*length && !path)) return ERROR_INVALID_PARAMETER;
+    ret = manifest_package_string(L"Path", length, path);
+    if (ret != APPMODEL_ERROR_NO_PACKAGE) return ret;
+    if (!GetModuleFileNameW(NULL,executable,ARRAY_SIZE(executable)) || wcslen(executable)>=ARRAY_SIZE(executable)-1)
+        return APPMODEL_ERROR_NO_PACKAGE;
+    name=wcsrchr(executable,'\\'); name=name ? name+1 : executable;
+    swprintf(key,ARRAY_SIZE(key),L"Software\\Wine\\AppDefaults\\%s\\Package",name);
+    capacity=*length;
+    size=0;
+    ret=RegGetValueW(HKEY_CURRENT_USER,key,L"Path",RRF_RT_REG_SZ,NULL,NULL,&size);
+    if (ret==ERROR_FILE_NOT_FOUND || ret==ERROR_PATH_NOT_FOUND) return APPMODEL_ERROR_NO_PACKAGE;
+    if (ret) return ret;
+    *length=size/sizeof(WCHAR);
+    if (capacity<*length) return ERROR_INSUFFICIENT_BUFFER;
+    if (!size || !path) return ERROR_INVALID_DATA;
+    ret=RegGetValueW(HKEY_CURRENT_USER,key,L"Path",RRF_RT_REG_SZ,NULL,path,&size);
+    if (ret) return ret;
+    if (RtlDetermineDosPathNameType_U(path)!=RtlPathTypeDriveAbsolute &&
+        RtlDetermineDosPathNameType_U(path)!=RtlPathTypeUncAbsolute) return ERROR_INVALID_DATA;
+    return ERROR_SUCCESS;
 }
 
 

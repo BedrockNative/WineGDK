@@ -472,6 +472,7 @@ void apartment_release(struct apartment *apt)
         struct list *cursor, *cursor2;
 
         TRACE("destroying apartment %p, oxid %s\n", apt, wine_dbgstr_longlong(apt->oxid));
+        ro_notify_apartment_shutdown(apt->oxid);
 
         if (apt->local_server)
         {

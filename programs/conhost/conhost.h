@@ -76,6 +76,7 @@ struct console
     HANDLE                 server;              /* console server handle */
     unsigned int           mode;                /* input mode */
     struct screen_buffer  *active;              /* active screen buffer */
+    BOOL                   native_terminal;      /* terminal launched by the desktop */
     int                    is_unix;             /* UNIX terminal mode */
     int                    use_relative_cursor; /* use relative cursor positioning */
     int                    no_window;           /* don't create console window */
@@ -131,6 +132,9 @@ struct screen_buffer
     unsigned int           color_map[16];       /* color table */
     RECT                   win;                 /* current visible window on the screen buffer */
     struct font_info       font;                /* console font information */
+    unsigned int           vt_state, vt_count, vt_params[16];
+    unsigned int           vt_saved_x, vt_saved_y;
+    BOOL                   vt_private, vt_invalid;
     struct wine_rb_entry   entry;               /* map entry */
 };
 
@@ -159,6 +163,11 @@ static inline unsigned int get_bounded_cursor_x( struct screen_buffer *screen_bu
 {
     return min( screen_buffer->cursor_x, screen_buffer->width - 1 );
 }
+
+BOOL process_vt_char(struct screen_buffer *screen, WCHAR ch, RECT *update);
+BOOL start_xdg_terminal(HANDLE server);
+BOOL attach_xdg_terminal(DWORD parent_id, HANDLE remote_server, const WCHAR *name, HANDLE *server, int *width, int *height);
+BOOL get_native_terminal_size(unsigned int *width, unsigned int *height);
 
 #endif /* RC_INVOKED */
 

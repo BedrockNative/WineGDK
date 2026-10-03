@@ -322,3 +322,4 @@
 @ stub Storage_Internal_GetAccessListForPackage
 @ stub _CleanRecentDocs
 @ stub _PredictReasonableImpact
+@ stdcall __wine_create_storage_folder(wstr ptr)

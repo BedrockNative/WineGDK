@@ -444,8 +444,7 @@ static HRESULT WINAPI package_GetTrustLevel( IPackage *iface, TrustLevel *trust_
 
 static HRESULT WINAPI package_get_Id( IPackage *iface, IPackageId **value )
 {
-    FIXME( "iface %p, value %p stub!\n", iface, value );
-    return E_NOTIMPL;
+    return package_identity_create( value );
 }
 
 static HRESULT WINAPI package_get_InstalledLocation( IPackage *iface, IStorageFolder **value )

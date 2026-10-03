@@ -1,13 +1,17 @@
 MODULE  = microsoft.windows.storage.pickers.dll
 UNIXLIB = microsoft.windows.storage.pickers.so
-IMPORTS = combase user32
+IMPORTS = combase user32 advapi32 shell32
 UNIX_CFLAGS = $(DBUS_CFLAGS)
 
 SOURCES = \
+	accesscache.c \
 	async.c \
 	async_private.idl \
 	classes.idl \
 	dialog.c \
+	dialog_fallback.c \
+	fileio.c \
+	filestream.c \
 	main.c \
 	map.c \
 	microsoft.windows.storage.pickers.idl \
@@ -16,4 +20,5 @@ SOURCES = \
 	unixlib.c \
 	uwp.rc \
 	uwpsave.c \
+	uwpopen.c \
 	vector.c

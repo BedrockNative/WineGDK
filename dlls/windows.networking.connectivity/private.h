@@ -79,4 +79,12 @@ extern IActivationFactory *network_information_factory;
 #define DEFINE_IINSPECTABLE( pfx, iface_type, impl_type, base_iface )                              \
     DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from_##iface_type, iface_type##_iface, &impl->base_iface )
 
+#define WIDL_using_Windows_Networking_PushNotifications
+#define WIDL_using_Wine_Internal
+#include "windows.networking.pushnotifications.h"
+#include "async_private.h"
+#define DEFINE_IINSPECTABLE_OUTER(pfx,iface_type,impl_type,outer_iface) \
+    DEFINE_IINSPECTABLE_(pfx,iface_type,impl_type,impl_from_##iface_type,iface_type##_iface,impl->outer_iface)
+extern HRESULT async_operation_inspectable_create(const GUID *, IUnknown *, IUnknown *, async_operation_callback, IAsyncOperation_IInspectable **);
+extern IActivationFactory *push_manager_factory;
 #endif

@@ -157,6 +157,23 @@ namespace Windows.ApplicationModel.Activation {
     }
 
     [
+        contract(Windows.Foundation.UniversalApiContract, 1.0),
+        uuid(fbc93e26-a14a-4b4f-82b0-33bed920af52)
+    ]
+    interface ILaunchActivatedEventArgs : IInspectable
+        requires Windows.ApplicationModel.Activation.IActivatedEventArgs
+    {
+        [propget] HRESULT Arguments([out, retval] HSTRING *value);
+        [propget] HRESULT TileId([out, retval] HSTRING *value);
+    }
+
+    [contract(Windows.Foundation.UniversalApiContract, 2.0), uuid(0c44717b-19f7-48d6-b046-cf22826eaa74)]
+    interface IPrelaunchActivatedEventArgs : IInspectable
+    {
+        [propget] HRESULT PrelaunchActivated([out, retval] boolean *value);
+    }
+
+    [
         contract(Windows.Foundation.UniversalApiContract, 3.0),
         uuid(ab14bee0-e760-440e-a91c-44796de3a92d)
     ]

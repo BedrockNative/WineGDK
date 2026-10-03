@@ -130,6 +130,11 @@ LONG WINAPI AppPolicyGetShowDeveloperDiagnostic(HANDLE token, AppPolicyShowDevel
 LONG WINAPI AppPolicyGetThreadInitializationType(HANDLE token, AppPolicyThreadInitializationType *policy);
 LONG WINAPI AppPolicyGetWindowingModel(HANDLE processToken, AppPolicyWindowingModel *policy);
 LONG WINAPI PackageIdFromFullName(const WCHAR *full_name, UINT32 flags, UINT32 *buffer_length, BYTE *buffer);
+LONG WINAPI GetCurrentPackageFullName(UINT32 *length, WCHAR *name);
+LONG WINAPI GetCurrentApplicationUserModelId(UINT32 *length, WCHAR *id);
+LONG WINAPI GetCurrentPackageId(UINT32 *length, BYTE *buffer);
+LONG WINAPI GetCurrentPackagePath(UINT32 *length, WCHAR *path);
+LONG WINAPI GetCurrentPackageFamilyName(UINT32 *length, WCHAR *name);
 
 #if defined(__cplusplus)
 }

@@ -19,6 +19,7 @@
 
 #include "initguid.h"
 #include "private.h"
+#include "xmllite.h"
 
 #include "wine/debug.h"
 
@@ -43,6 +44,10 @@ HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **fa
     if (!wcscmp( buffer, RuntimeClass_Windows_Security_Authentication_OnlineId_OnlineIdServiceTicketRequest ))
         IActivationFactory_QueryInterface( ticket_factory, &IID_IActivationFactory, (void **)factory );
 
+    if (!wcscmp(buffer,L"Windows.Security.Authentication.Web.Core.WebAuthenticationCoreManager"))
+        IActivationFactory_QueryInterface(webcore_factory,&IID_IActivationFactory,(void **)factory);
+    if (!wcscmp(buffer,L"Windows.Security.Authentication.Web.Core.WebTokenRequest"))
+        IActivationFactory_QueryInterface(webrequest_factory,&IID_IActivationFactory,(void **)factory);
     if (*factory) return S_OK;
     return CLASS_E_CLASSNOTAVAILABLE;
 }

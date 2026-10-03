@@ -747,3 +747,104 @@ namespace Windows.UI.Core {
         interface Windows.UI.Core.ICoreWindowEventArgs;
     }
 }
+
+namespace Windows.UI.Core {
+    runtimeclass SystemNavigationManager;
+    runtimeclass BackRequestedEventArgs;
+    declare {
+        interface Windows.Foundation.EventHandler<Windows.UI.Core.BackRequestedEventArgs *>;
+    }
+    typedef enum AppViewBackButtonVisibility AppViewBackButtonVisibility;
+    enum AppViewBackButtonVisibility { Visible = 0, Collapsed = 1, Disabled = 2 };
+
+    [uuid(d603d28a-e411-4a4e-ba41-6a327a8675bc)]
+    interface IBackRequestedEventArgs : IInspectable
+    {
+        [propget] HRESULT Handled([out, retval] boolean *value);
+        [propput] HRESULT Handled([in] boolean value);
+    }
+    [uuid(93023118-cf50-42a6-9706-69107fa122e1)]
+    interface ISystemNavigationManager : IInspectable
+    {
+        [eventadd] HRESULT BackRequested([in] Windows.Foundation.EventHandler<Windows.UI.Core.BackRequestedEventArgs *> *handler,
+                                        [out, retval] EventRegistrationToken *token);
+        [eventremove] HRESULT BackRequested([in] EventRegistrationToken token);
+    }
+    [uuid(8c510401-67be-49ae-9509-671c1e54a389)]
+    interface ISystemNavigationManager2 : IInspectable
+    {
+        [propget] HRESULT AppViewBackButtonVisibility([out, retval] Windows.UI.Core.AppViewBackButtonVisibility *value);
+        [propput] HRESULT AppViewBackButtonVisibility([in] Windows.UI.Core.AppViewBackButtonVisibility value);
+    }
+    [uuid(dc52b5ce-bee0-4305-8c54-68228ed683b5)]
+    interface ISystemNavigationManagerStatics : IInspectable
+    {
+        HRESULT GetForCurrentView([out, retval] Windows.UI.Core.SystemNavigationManager **value);
+    }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
+    runtimeclass BackRequestedEventArgs { [default] interface Windows.UI.Core.IBackRequestedEventArgs; }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0),
+     static(Windows.UI.Core.ISystemNavigationManagerStatics, Windows.Foundation.UniversalApiContract, 1.0)]
+    runtimeclass SystemNavigationManager {
+        [default] interface Windows.UI.Core.ISystemNavigationManager;
+        interface Windows.UI.Core.ISystemNavigationManager2;
+    }
+}
+
+namespace Windows.UI.Core {
+    [contract(Windows.Foundation.UniversalApiContract, 1.0), exclusiveto(Windows.UI.Core.CoreDispatcher), uuid(bafaecad-484d-41be-ba80-1d58c65263ea)]
+    interface ICoreDispatcherWithTaskPriority : IInspectable {
+        [propget] HRESULT CurrentPriority([out, retval] Windows.UI.Core.CoreDispatcherPriority *value);
+        [propput] HRESULT CurrentPriority([in] Windows.UI.Core.CoreDispatcherPriority value);
+        [overload("ShouldYield")] HRESULT ShouldYield([out, retval] boolean *value);
+        [overload("ShouldYield")] HRESULT ShouldYieldToPriority([in] Windows.UI.Core.CoreDispatcherPriority priority, [out, retval] boolean *value);
+        HRESULT StopProcessEvents();
+    }
+}
+
+namespace Windows.UI.Core {
+    interface ICoreInputSourceBase;
+    interface ICorePointerInputSource;
+    runtimeclass CoreIndependentInputSource;
+}
+namespace Windows.Foundation {
+    declare { interface Windows.Foundation.TypedEventHandler<IInspectable *, Windows.UI.Core.PointerEventArgs *>; }
+}
+namespace Windows.UI.Core {
+    [uuid(9f488807-4580-4be8-be68-92a9311713bb), contract(Windows.Foundation.UniversalApiContract, 1.0)]
+    interface ICoreInputSourceBase : IInspectable {
+        [propget] HRESULT Dispatcher([out, retval] Windows.UI.Core.CoreDispatcher **value);
+        [propget] HRESULT IsInputEnabled([out, retval] boolean *value);
+        [propput] HRESULT IsInputEnabled([in] boolean value);
+        HRESULT add_InputEnabled([in] IInspectable *handler, [out, retval] EventRegistrationToken *token);
+        HRESULT remove_InputEnabled([in] EventRegistrationToken token);
+    }
+    [uuid(bbf1bb18-e47a-48eb-8807-f8f8d3ea4551), contract(Windows.Foundation.UniversalApiContract, 1.0)]
+    interface ICorePointerInputSource : IInspectable {
+        HRESULT ReleasePointerCapture();
+        HRESULT SetPointerCapture();
+        [propget] HRESULT HasCapture([out, retval] boolean *value);
+        [propget] HRESULT PointerPosition([out, retval] Windows.Foundation.Point *value);
+        [propget] HRESULT PointerCursor([out, retval] Windows.UI.Core.CoreCursor **value);
+        [propput] HRESULT PointerCursor([in] Windows.UI.Core.CoreCursor *value);
+        [eventadd] HRESULT PointerCaptureLost([in] Windows.Foundation.TypedEventHandler<IInspectable *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *token);
+        [eventremove] HRESULT PointerCaptureLost([in] EventRegistrationToken token);
+        [eventadd] HRESULT PointerEntered([in] Windows.Foundation.TypedEventHandler<IInspectable *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *token);
+        [eventremove] HRESULT PointerEntered([in] EventRegistrationToken token);
+        [eventadd] HRESULT PointerExited([in] Windows.Foundation.TypedEventHandler<IInspectable *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *token);
+        [eventremove] HRESULT PointerExited([in] EventRegistrationToken token);
+        [eventadd] HRESULT PointerMoved([in] Windows.Foundation.TypedEventHandler<IInspectable *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *token);
+        [eventremove] HRESULT PointerMoved([in] EventRegistrationToken token);
+        [eventadd] HRESULT PointerPressed([in] Windows.Foundation.TypedEventHandler<IInspectable *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *token);
+        [eventremove] HRESULT PointerPressed([in] EventRegistrationToken token);
+        [eventadd] HRESULT PointerReleased([in] Windows.Foundation.TypedEventHandler<IInspectable *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *token);
+        [eventremove] HRESULT PointerReleased([in] EventRegistrationToken token);
+        [eventadd] HRESULT PointerWheelChanged([in] Windows.Foundation.TypedEventHandler<IInspectable *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *token);
+        [eventremove] HRESULT PointerWheelChanged([in] EventRegistrationToken token);
+    }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
+    runtimeclass CoreIndependentInputSource {
+        [default] interface ICoreInputSourceBase;
+        interface ICorePointerInputSource;
+    }
+}

@@ -22,6 +22,7 @@
 #include "inputpaneinterop.h"
 
 #include "wine/debug.h"
+#include "wine/winrt_events.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(ui);
 
@@ -29,6 +30,7 @@ struct inputpane
 {
     IInputPane IInputPane_iface;
     IInputPane2 IInputPane2_iface;
+    struct winrt_event showing, hiding;
     LONG ref;
 };
 
@@ -82,7 +84,12 @@ static ULONG WINAPI inputpane_Release( IInputPane *iface )
 
     TRACE( "iface %p, ref %lu.\n", iface, ref );
 
-    if (!ref) free( impl );
+    if (!ref)
+    {
+        winrt_event_clear(&impl->showing);
+        winrt_event_clear(&impl->hiding);
+        free(impl);
+    }
     return ref;
 }
 
@@ -106,32 +113,29 @@ static HRESULT WINAPI inputpane_GetTrustLevel( IInputPane *iface, TrustLevel *tr
 
 static HRESULT WINAPI inputpane_add_Showing( IInputPane *iface, ITypedEventHandler_InputPane_InputPaneVisibilityEventArgs *handler, EventRegistrationToken *token )
 {
-    FIXME( "iface %p, handler %p, token %p stub!\n", iface, handler, token);
-    return E_NOTIMPL;
+    return winrt_event_add(&impl_from_IInputPane(iface)->showing, handler, token);
 }
 
 static HRESULT WINAPI inputpane_remove_Showing( IInputPane *iface, EventRegistrationToken token )
 {
-    FIXME( "iface %p, token %#I64x stub!\n", iface, token.value );
-    return E_NOTIMPL;
+    return winrt_event_remove(&impl_from_IInputPane(iface)->showing, token);
 }
 
 static HRESULT WINAPI inputpane_add_Hiding( IInputPane *iface, ITypedEventHandler_InputPane_InputPaneVisibilityEventArgs *handler, EventRegistrationToken *token )
 {
-    FIXME( "iface %p, handler %p, token %p stub!\n", iface, handler, token);
-    return E_NOTIMPL;
+    return winrt_event_add(&impl_from_IInputPane(iface)->hiding, handler, token);
 }
 
 static HRESULT WINAPI inputpane_remove_Hiding( IInputPane *iface, EventRegistrationToken token )
 {
-    FIXME( "iface %p, token %#I64x stub!\n", iface, token.value );
-    return E_NOTIMPL;
+    return winrt_event_remove(&impl_from_IInputPane(iface)->hiding, token);
 }
 
 static HRESULT WINAPI inputpane_OccludedRect( IInputPane *iface, Rect *value )
 {
-    FIXME( "iface %p, value %p stub!\n", iface, value );
-    return E_NOTIMPL;
+    if (!value) return E_POINTER;
+    memset(value, 0, sizeof(*value)); /* No software keyboard is displayed. */
+    return S_OK;
 }
 
 static const struct IInputPaneVtbl inputpane_vtbl =
@@ -158,6 +162,7 @@ DEFINE_IINSPECTABLE( inputpane2, IInputPane2, struct inputpane, IInputPane_iface
 static HRESULT WINAPI inputpane2_TryShow( IInputPane2 *iface, boolean *result )
 {
     FIXME( "iface %p, result %p stub!\n", iface, result );
+    if (!result) return E_POINTER;
     *result = FALSE;
     return S_OK;
 }
@@ -165,6 +170,8 @@ static HRESULT WINAPI inputpane2_TryShow( IInputPane2 *iface, boolean *result )
 static HRESULT WINAPI inputpane2_TryHide( IInputPane2 *iface, boolean *result )
 {
     FIXME( "iface %p, result %p stub!\n", iface, result );
+    if (!result) return E_POINTER;
+    *result = FALSE;
     return S_OK;
 }
 

@@ -26,3 +26,6 @@ import "windows.networking.connectivity.idl";
 namespace Windows.Networking.Connectivity {
     runtimeclass NetworkInformation;
 }
+
+import "windows.networking.pushnotifications.idl";
+namespace Windows.Networking.PushNotifications { runtimeclass PushNotificationChannelManager; }

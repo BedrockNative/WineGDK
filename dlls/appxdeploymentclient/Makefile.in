@@ -1,7 +1,8 @@
 MODULE  = appxdeploymentclient.dll
-IMPORTS = combase
+IMPORTS = combase shlwapi xmllite bcrypt
 
 SOURCES = \
 	classes.idl \
 	main.c \
+	identity.c \
 	package.c

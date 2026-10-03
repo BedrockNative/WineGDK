@@ -729,7 +729,24 @@ static void test_GetIidsFn(void)
 
 static void test_Allocate(void)
 {
+    static const size_t sizes[] = {16, 64, 128, 176, 512, 4096};
+    unsigned int i, iteration;
+    size_t j;
     void *addr, **ptr, **base;
+
+    /* C++/CX constructors rely on zero-initialized object storage, including reused allocations. */
+    for (i = 0; i < ARRAY_SIZE(sizes); ++i)
+    {
+        for (iteration = 0; iteration < 16; ++iteration)
+        {
+            addr = pAllocate(sizes[i]);
+            for (j = 0; j < sizes[i] && !((BYTE *)addr)[j]; ++j) {}
+            ok(j == sizes[i], "Allocation of %Iu bytes is not zeroed at %Iu (iteration %u).\n",
+                    sizes[i], j, iteration);
+            memset(addr, 0xa5, sizes[i]);
+            pFree(addr);
+        }
+    }
 
     addr = pAllocate(0);
     ok(!!addr, "got addr %p\n", addr);

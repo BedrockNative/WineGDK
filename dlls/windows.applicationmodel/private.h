@@ -36,8 +36,20 @@
 #define WIDL_using_Windows_Storage
 #include "windows.applicationmodel.h"
 
+#define WIDL_using_Windows_ApplicationModel_Store
+#include "windows.applicationmodel.store.h"
+#define WIDL_using_Windows_ApplicationModel_Resources_Core
+#include "windows.applicationmodel.resources.core.h"
+#define WIDL_using_Windows_Globalization
+#include "windows.globalization.h"
+#define WIDL_using_Windows_ApplicationModel_ExtendedExecution
+#include "windows.applicationmodel.extendedexecution.h"
+extern IActivationFactory *extendedexecution_factory;
+extern IActivationFactory *resource_context_factory;
+extern IActivationFactory *currentapp_factory;
 extern IActivationFactory *package_factory;
 extern IActivationFactory *design_mode_factory;
+extern HRESULT package_identity_create( IPackageId **out );
 
 #define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \
     static inline impl_type *impl_from( iface_type *iface )                                        \

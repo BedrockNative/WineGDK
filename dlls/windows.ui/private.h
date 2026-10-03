@@ -28,7 +28,12 @@
 #include "winstring.h"
 
 #include "activation.h"
+#include "corewindow.h"
 
+#define WIDL_using_Windows_Devices_Input
+#define WIDL_using_Windows_UI_Input
+#define WIDL_using_Windows_Foundation_Collections
+#define WIDL_using_Windows_System
 #define WIDL_using_Windows_Foundation
 #include "windows.foundation.h"
 #define WIDL_using_Windows_UI
@@ -43,6 +48,35 @@ extern IActivationFactory *uisettings_factory;
 extern IActivationFactory *uiviewsettings_factory;
 extern IActivationFactory *inputpane_factory;
 extern IActivationFactory *corewindow_factory;
+extern IActivationFactory *corecursor_factory;
+HRESULT corecursor_create(CoreCursorType type, UINT32 id, ICoreCursor **out);
+HRESULT corecursor_handle(ICoreCursor *cursor, HCURSOR *out);
+HRESULT pointer_args_create(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, IPointerEventArgs **out);
+extern IActivationFactory *navigation_factory;
+extern IActivationFactory *pointervisualization_factory;
+extern IActivationFactory *mouse_factory;
+extern IActivationFactory *mousecapabilities_factory;
+extern IActivationFactory *keyboardcapabilities_factory;
+extern IActivationFactory *touchcapabilities_factory;
+HRESULT mouse_create(HWND hwnd, IMouseDevice **out);
+HRESULT corewindow_get_mouse(IMouseDevice **out);
+void mouse_close(IMouseDevice *iface);
+void mouse_input(IMouseDevice *iface, HRAWINPUT input);
+HRESULT pointervisualization_create(IPointerVisualizationSettings **out);
+HRESULT corewindow_get_pointervisualization(IPointerVisualizationSettings **out);
+struct dispatched_action;
+struct dispatcher_queue { SRWLOCK lock; HWND hwnd; struct dispatched_action *head; CoreDispatcherPriority current_priority; };
+#define WINE_WM_DISPATCH (WM_APP + 0x317)
+HRESULT dispatcher_queue_add(struct dispatcher_queue *queue, CoreDispatcherPriority priority, IDispatchedHandler *callback, IAsyncAction **out);
+BOOL dispatcher_queue_should_yield(struct dispatcher_queue *queue, CoreDispatcherPriority priority);
+void dispatcher_queue_dispatch(struct dispatcher_queue *queue);
+void dispatcher_queue_close(struct dispatcher_queue *queue);
+#define WINE_SC_BACK 0xeff0
+HRESULT navigation_create(HWND hwnd, ISystemNavigationManager **out);
+void navigation_close(ISystemNavigationManager *iface);
+BOOL navigation_back(ISystemNavigationManager *iface);
+HRESULT corewindow_get_navigation(ISystemNavigationManager **out);
+void corewindow_load_metadata(WCHAR *title, UINT capacity, HICON *small_icon, HICON *large_icon);
 
 #define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \
     static inline impl_type *impl_from( iface_type *iface )                                        \

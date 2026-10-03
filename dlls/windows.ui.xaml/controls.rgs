@@ -1,0 +1,48 @@
+HKLM
+{
+    NoRemove Software
+    {
+        NoRemove Microsoft
+        {
+            NoRemove WindowsRuntime
+            {
+                NoRemove ActivatableClassId
+                {
+                    ForceRemove Windows.UI.Xaml.Media.FontFamily
+                    {
+                        val DllPath = s '%MODULE%'
+                    }
+                    ForceRemove Windows.UI.Xaml.Media.SolidColorBrush
+                    {
+                        val DllPath = s '%MODULE%'
+                    }
+                    ForceRemove Windows.UI.Xaml.Controls.Page
+                    {
+                        val DllPath = s '%MODULE%'
+                    }
+                    ForceRemove Windows.UI.Xaml.Controls.UserControl
+                    {
+                        val DllPath = s '%MODULE%'
+                    }
+                    ForceRemove Windows.UI.Xaml.Controls.Canvas
+                    {
+                        val DllPath = s '%MODULE%'
+                    }
+                    ForceRemove Windows.UI.Xaml.Controls.SwapChainPanel
+                    {
+                        val DllPath = s '%MODULE%'
+                    }
+                    ForceRemove Windows.UI.Xaml.Controls.TextBox
+                    {
+                        val DllPath = s '%MODULE%'
+                    }
+                    ForceRemove Windows.UI.Xaml.Controls.Button
+                    {
+                        val DllPath = s '%MODULE%'
+                    }
+
+                }
+            }
+        }
+    }
+}

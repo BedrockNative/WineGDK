@@ -54,6 +54,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(pickers);
     DO_FUNC(dbus_bus_add_match); \
     DO_FUNC(dbus_bus_get_private); \
     DO_FUNC(dbus_connection_close); \
+    DO_FUNC(dbus_connection_send); \
+    DO_FUNC(dbus_connection_flush); \
     DO_FUNC(dbus_connection_pop_message); \
     DO_FUNC(dbus_connection_read_write); \
     DO_FUNC(dbus_connection_send_with_reply_and_block); \
@@ -403,9 +405,21 @@ static NTSTATUS portal_show( struct picker_show_params *params )
 
     for (;;)
     {
+        if (params->cancelled && __atomic_load_n(params->cancelled, __ATOMIC_ACQUIRE))
+        {
+            DBusMessage *close = p_dbus_message_new_method_call(PORTAL_BUS, path, PORTAL_REQUEST, "Close");
+            if (close)
+            {
+                p_dbus_connection_send(connection, close, NULL);
+                p_dbus_connection_flush(connection);
+                p_dbus_message_unref(close);
+            }
+            status = STATUS_CANCELLED;
+            break;
+        }
         if (!(message = p_dbus_connection_pop_message( connection )))
         {
-            if (p_dbus_connection_read_write( connection, -1 )) continue;
+            if (p_dbus_connection_read_write( connection, 100 )) continue;
             status = STATUS_NOT_IMPLEMENTED;
             break;
         }
@@ -474,3 +488,28 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
 };
 
 C_ASSERT( ARRAY_SIZE(__wine_unix_call_funcs) == unix_funcs_count );
+
+#ifdef _WIN64
+static NTSTATUS wow64_picker_show(void *args)
+{
+    struct picker_show_params32 {
+        UINT32 mode, start_location;
+        UINT64 x11_window;
+        UINT32 title, accept_label, filters, current_name, current_folder, result;
+        UINT32 result_size, result_len, cancelled;
+    } *params32 = args;
+    struct picker_show_params params = {
+        .mode = params32->mode, .start_location = params32->start_location,
+        .x11_window = params32->x11_window,
+        .title = ULongToPtr(params32->title), .accept_label = ULongToPtr(params32->accept_label),
+        .filters = ULongToPtr(params32->filters), .current_name = ULongToPtr(params32->current_name),
+        .current_folder = ULongToPtr(params32->current_folder), .result = ULongToPtr(params32->result),
+        .result_size = params32->result_size, .cancelled = ULongToPtr(params32->cancelled),
+    };
+    NTSTATUS status = picker_show(&params);
+    params32->result_len = params.result_len;
+    return status;
+}
+const unixlib_entry_t __wine_unix_call_wow64_funcs[] = {wow64_picker_show};
+C_ASSERT(ARRAY_SIZE(__wine_unix_call_wow64_funcs) == unix_funcs_count);
+#endif

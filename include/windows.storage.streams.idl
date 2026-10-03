@@ -36,6 +36,11 @@ namespace Windows.Storage.Streams {
     interface IBufferFactory;
     interface IBufferStatics;
     interface IContentTypeProvider;
+    interface IDataReader;
+    interface IDataReaderFactory;
+    interface IDataReaderStatics;
+    runtimeclass DataReader;
+    runtimeclass DataReaderLoadOperation;
     interface IDataWriter;
     interface IDataWriterFactory;
     interface IInputStream;
@@ -379,5 +384,54 @@ namespace Windows.Storage.Streams {
     {
         [default] interface Windows.Storage.Streams.IRandomAccessStreamReference;
     }
+
+    [uuid(e2b50029-b4c1-4314-a4b8-fb813a2f275e), contract(Windows.Foundation.UniversalApiContract, 1.0)]
+    interface IDataReader : IInspectable
+    {
+        [propget] HRESULT UnconsumedBufferLength([out, retval] UINT32 *value);
+        [propget] HRESULT UnicodeEncoding([out, retval] Windows.Storage.Streams.UnicodeEncoding *value);
+        [propput] HRESULT UnicodeEncoding([in] Windows.Storage.Streams.UnicodeEncoding value);
+        [propget] HRESULT ByteOrder([out, retval] Windows.Storage.Streams.ByteOrder *value);
+        [propput] HRESULT ByteOrder([in] Windows.Storage.Streams.ByteOrder value);
+        [propget] HRESULT InputStreamOptions([out, retval] Windows.Storage.Streams.InputStreamOptions *value);
+        [propput] HRESULT InputStreamOptions([in] Windows.Storage.Streams.InputStreamOptions value);
+        HRESULT ReadByte([out, retval] BYTE *value);
+        HRESULT ReadBytes([in] UINT32 count, [out, size_is(count)] BYTE *value);
+        HRESULT ReadBuffer([in] UINT32 count, [out, retval] Windows.Storage.Streams.IBuffer **value);
+        HRESULT ReadBoolean([out, retval] boolean *value);
+        HRESULT ReadGuid([out, retval] GUID *value);
+        HRESULT ReadInt16([out, retval] INT16 *value);
+        HRESULT ReadInt32([out, retval] INT32 *value);
+        HRESULT ReadInt64([out, retval] INT64 *value);
+        HRESULT ReadUInt16([out, retval] UINT16 *value);
+        HRESULT ReadUInt32([out, retval] UINT32 *value);
+        HRESULT ReadUInt64([out, retval] UINT64 *value);
+        HRESULT ReadSingle([out, retval] FLOAT *value);
+        HRESULT ReadDouble([out, retval] DOUBLE *value);
+        HRESULT ReadString([in] UINT32 count, [out, retval] HSTRING *value);
+        HRESULT ReadDateTime([out, retval] Windows.Foundation.DateTime *value);
+        HRESULT ReadTimeSpan([out, retval] Windows.Foundation.TimeSpan *value);
+        HRESULT LoadAsync([in] UINT32 count, [out, retval] Windows.Storage.Streams.DataReaderLoadOperation **value);
+        HRESULT DetachBuffer([out, retval] Windows.Storage.Streams.IBuffer **value);
+        HRESULT DetachStream([out, retval] Windows.Storage.Streams.IInputStream **value);
+    }
+    [uuid(d7527847-57da-4e15-914c-06806699a098), exclusiveto(Windows.Storage.Streams.DataReader), contract(Windows.Foundation.UniversalApiContract, 1.0)]
+    interface IDataReaderFactory : IInspectable
+    {
+        HRESULT CreateDataReader([in] Windows.Storage.Streams.IInputStream *stream, [out, retval] Windows.Storage.Streams.DataReader **value);
+    }
+    [uuid(11fcbfc8-f93a-471b-b121-f379e349313c), exclusiveto(Windows.Storage.Streams.DataReader), contract(Windows.Foundation.UniversalApiContract, 1.0)]
+    interface IDataReaderStatics : IInspectable
+    {
+        HRESULT FromBuffer([in] Windows.Storage.Streams.IBuffer *buffer, [out, retval] Windows.Storage.Streams.DataReader **value);
+    }
+    [activatable(Windows.Storage.Streams.IDataReaderFactory, Windows.Foundation.UniversalApiContract, 1.0), static(Windows.Storage.Streams.IDataReaderStatics, Windows.Foundation.UniversalApiContract, 1.0), contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile), threading(both)]
+    runtimeclass DataReader
+    {
+        [default] interface Windows.Storage.Streams.IDataReader;
+        interface Windows.Foundation.IClosable;
+    }
+    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
+    runtimeclass DataReaderLoadOperation { [default] interface Windows.Foundation.IAsyncOperation<UINT32>; }
 
 }

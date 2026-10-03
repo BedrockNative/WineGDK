@@ -1,12 +1,22 @@
+IMPORTLIB = windows.ui
 MODULE  = windows.ui.dll
-IMPORTS = combase advapi32 user32
+IMPORTS = combase advapi32 user32 xmllite shlwapi
 
 SOURCES = \
 	accessibilitysettings.c \
 	classes.idl \
 	corewindow.c \
+	window_metadata.c \
+	window_state.c \
+	cursor.c \
+	pointer.c \
+	dispatcher.c \
 	inputpane.c \
+	inputcapabilities.c \
 	main.c \
+	mouse.c \
+	navigation.c \
+	pointervisualization.c \
 	uisettings.c \
 	uiviewsettings.c \
 	weakref.c

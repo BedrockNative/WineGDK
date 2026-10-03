@@ -41,6 +41,13 @@ static HRESULT WINAPI request_QueryInterface( IUnknown *iface, REFIID iid, void 
 {
     struct picker_request *impl = impl_from_IUnknown( iface );
 
+    if (!out) return E_POINTER;
+    if (IsEqualGUID(iid, &IID_IClosable))
+    {
+        *out = &impl->IClosable_iface;
+        IUnknown_AddRef(&impl->IUnknown_iface);
+        return S_OK;
+    }
     if (IsEqualGUID( iid, &IID_IUnknown ))
     {
         *out = &impl->IUnknown_iface;
@@ -82,6 +89,25 @@ static const IUnknownVtbl request_vtbl =
     request_Release,
 };
 
+static struct picker_request *request_from_closable(IClosable *iface)
+{ return CONTAINING_RECORD(iface, struct picker_request, IClosable_iface); }
+static HRESULT WINAPI request_close_qi(IClosable *iface, REFIID iid, void **out)
+{ return request_QueryInterface(&request_from_closable(iface)->IUnknown_iface, iid, out); }
+static ULONG WINAPI request_close_addref(IClosable *iface)
+{ return request_AddRef(&request_from_closable(iface)->IUnknown_iface); }
+static ULONG WINAPI request_close_release(IClosable *iface)
+{ return request_Release(&request_from_closable(iface)->IUnknown_iface); }
+static HRESULT WINAPI request_close_iids(IClosable *iface, ULONG *count, IID **out)
+{ if (!count || !out) return E_POINTER; *count = 0; *out = NULL; return S_OK; }
+static HRESULT WINAPI request_close_name(IClosable *iface, HSTRING *out)
+{ if (!out) return E_POINTER; *out = NULL; return S_OK; }
+static HRESULT WINAPI request_close_trust(IClosable *iface, TrustLevel *out)
+{ if (!out) return E_POINTER; *out = BaseTrust; return S_OK; }
+static HRESULT WINAPI request_close(IClosable *iface)
+{ InterlockedExchange(&request_from_closable(iface)->cancelled, 1); return S_OK; }
+static const IClosableVtbl request_close_vtbl = {request_close_qi, request_close_addref, request_close_release,
+    request_close_iids, request_close_name, request_close_trust, request_close};
+
 static HWND get_picker_owner( UINT64 window_id )
 {
     HWND hwnd = (HWND)(ULONG_PTR)window_id;
@@ -100,6 +126,7 @@ HRESULT picker_request_create( enum picker_kind kind, UINT64 window_id, struct p
 
     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
     impl->IUnknown_iface.lpVtbl = &request_vtbl;
+    impl->IClosable_iface.lpVtbl = &request_close_vtbl;
     impl->ref = 1;
     impl->kind = kind;
     /* Resolve the owner on the caller's thread, before the async worker starts. */
@@ -211,7 +238,7 @@ HRESULT picker_run_dialog( struct picker_request *request, WCHAR **paths )
 
     *paths = NULL;
     InitOnceExecuteOnce( &init_once, init_unixlib, NULL, NULL );
-    if (!unix_ready) return E_NOTIMPL;
+    if (!unix_ready) return picker_run_fallback_dialog(request, paths);
 
     switch (request->kind)
     {
@@ -221,6 +248,7 @@ HRESULT picker_run_dialog( struct picker_request *request, WCHAR **paths )
     default: params.mode = UNIX_PICKER_OPEN; break;
     }
     params.start_location = request->start_location;
+    params.cancelled = &request->cancelled;
     params.x11_window = get_x11_window( request->window_id );
     params.title = title = to_utf8( request->title );
     params.accept_label = accept = to_utf8( request->accept_label );
@@ -312,6 +340,11 @@ done:
     free( filters );
     free( name );
     free( folder );
+    if (hr == E_NOTIMPL)
+    {
+        free(ret);
+        return picker_run_fallback_dialog(request, paths);
+    }
     if (FAILED(hr)) free( ret );
     else *paths = ret;
     return hr;

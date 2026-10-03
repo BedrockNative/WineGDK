@@ -54,6 +54,7 @@ struct picker_show_params
     char *result;
     UINT32 result_size;
     UINT32 result_len;
+    const LONG *cancelled;
 };
 
 enum unix_funcs

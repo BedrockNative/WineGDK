@@ -28,6 +28,9 @@
 #include "wine/debug.h"
 
 #define WIDL_using_Windows_Foundation
+#define WIDL_using_Windows_UI_Core
+#define WIDL_using_Windows_Storage_Streams
+#include "windows.ui.core.h"
 #define WIDL_using_Windows_Graphics_Display
 #include "windows.graphics.display.h"
 

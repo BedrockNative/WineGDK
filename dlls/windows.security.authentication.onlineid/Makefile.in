@@ -1,8 +1,15 @@
 MODULE  = windows.security.authentication.onlineid.dll
-IMPORTS = combase
+IMPORTS = combase propsys uuid advapi32 ws2_32 xmllite shlwapi
 
 SOURCES = \
 	authenticator.c \
+	async.c \
+	async_private.idl \
+	vector.c \
+	string_map.c \
+	webcore.c \
+	webcore_result.c \
+	xodus.c \
 	classes.idl \
 	main.c \
 	ticket.c
