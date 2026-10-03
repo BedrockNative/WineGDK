@@ -1416,6 +1416,58 @@ BOOL is_system_dir_path( const UNICODE_STRING *path, WORD *machine )
 
 
 /***********************************************************************
+ *           open_mapped_image
+ */
+/* Xodus keeps licensed executables in inherited descriptors instead of writing
+ * plaintext to disk. Protocol compatible with xodus-gaming/wine's
+ * WINE_DLL_FILE_MAP: fd:NT-path entries separated by '|'. */
+static NTSTATUS open_mapped_image( const UNICODE_STRING *nt_name, HANDLE *mapping )
+{
+    const char *value = getenv( "WINE_DLL_FILE_MAP" );
+    const char *entry, *end, *sep, *p;
+    char *name;
+    DWORD length;
+    NTSTATUS status;
+
+    if (!value || !*value) return STATUS_DLL_NOT_FOUND;
+    if ((status = RtlUnicodeToUTF8N( NULL, 0, &length, nt_name->Buffer, nt_name->Length )))
+        return status;
+    if (!(name = malloc( length ))) return STATUS_NO_MEMORY;
+    if ((status = RtlUnicodeToUTF8N( name, length, &length, nt_name->Buffer, nt_name->Length )))
+    {
+        free( name );
+        return status;
+    }
+    status = STATUS_DLL_NOT_FOUND;
+    for (entry = value; *entry; entry = *end ? end + 1 : end)
+    {
+        HANDLE handle;
+        LARGE_INTEGER size;
+        int fd = 0;
+
+        end = strchr( entry, '|' );
+        if (!end) end = entry + strlen( entry );
+        sep = memchr( entry, ':', end - entry );
+        if (!sep || sep == entry || end - sep - 1 != length || memcmp( sep + 1, name, length )) continue;
+        for (p = entry; p < sep; p++)
+        {
+            if (*p < '0' || *p > '9' || fd > (INT_MAX - (*p - '0')) / 10) break;
+            fd = fd * 10 + *p - '0';
+        }
+        if (p != sep) continue;
+        if ((status = wine_server_fd_to_handle( fd, GENERIC_READ | SYNCHRONIZE, 0, &handle ))) break;
+        size.QuadPart = 0;
+        status = NtCreateSection( mapping, STANDARD_RIGHTS_REQUIRED | SECTION_QUERY |
+                                  SECTION_MAP_READ | SECTION_MAP_EXECUTE,
+                                  NULL, &size, PAGE_EXECUTE_READ, SEC_IMAGE, handle );
+        NtClose( handle );
+        break;
+    }
+    free( name );
+    return status;
+}
+
+/***********************************************************************
  *           open_main_image
  */
 static NTSTATUS open_main_image( UNICODE_STRING *nt_name, void **module, SECTION_IMAGE_INFORMATION *info,
@@ -1431,6 +1483,19 @@ static NTSTATUS open_main_image( UNICODE_STRING *nt_name, void **module, SECTION
     if (loadorder == LO_DISABLED) NtTerminateProcess( GetCurrentProcess(), STATUS_DLL_NOT_FOUND );
 
     InitializeObjectAttributes( &attr, nt_name, OBJ_CASE_INSENSITIVE, 0, NULL );
+    status = open_mapped_image( nt_name, &mapping );
+    if (status != STATUS_DLL_NOT_FOUND)
+    {
+        if (status) return status;
+        status = virtual_map_module( mapping, module, &size, info, 0, 0, machine );
+        if (status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH && info->ComPlusNativeReady)
+        {
+            info->Machine = is_machine_64bit( native_machine ) ? IMAGE_FILE_MACHINE_AMD64 : native_machine;
+            status = STATUS_SUCCESS;
+        }
+        NtClose( mapping );
+        return status;
+    }
     if (get_nt_and_unix_names( &attr, &true_nt_name, &unix_name, FILE_OPEN, FALSE )) return STATUS_DLL_NOT_FOUND;
 
     status = open_dll_file( unix_name, &attr, &mapping );

@@ -1530,7 +1530,17 @@ static INT_PTR CALLBACK wait_dlgproc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp 
 
 static HWND show_wait_window(void)
 {
-    HWND hwnd = CreateDialogParamW( GetModuleHandleW(0), MAKEINTRESOURCEW(IDD_WAITDLG), 0,
+    const WCHAR *hide = _wgetenv( L"WINEBOOT_HIDE_DIALOG" );
+    HWND hwnd;
+
+    /* Launchers can show progress in their own UI without disabling graphics
+     * drivers or skipping prefix setup. Diagnostics remain on stderr. */
+    if (hide && !wcscmp( hide, L"1" ))
+    {
+        TRACE( "Prefix update wait dialog suppressed by WINEBOOT_HIDE_DIALOG.\n" );
+        return NULL;
+    }
+    hwnd = CreateDialogParamW( GetModuleHandleW(0), MAKEINTRESOURCEW(IDD_WAITDLG), 0,
                                     wait_dlgproc, (LPARAM)prettyprint_configdir() );
     ShowWindow( hwnd, SW_SHOWNORMAL );
     return hwnd;

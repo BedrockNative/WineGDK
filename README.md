@@ -8,6 +8,10 @@ Set `XODUS_SOCK_NAME` to override the default `xodus.sock` filename under
 `$XDG_RUNTIME_DIR/my-xodus.sock`. An unset or empty value uses `xodus.sock`.
 The existing `XODUS_SOCKET` full-path override takes precedence when nonempty.
 
+Xodus's `WINE_DLL_FILE_MAP` in-memory executable protocol is supported. Launchers
+may set `WINEBOOT_HIDE_DIALOG=1` to hide only the prefix-update wait dialog while
+retaining setup and diagnostic output. See [launcher integration](documentation/xodus-launcher.md).
+
 As of [3414250](https://github.com/Weather-OS/WineGDK/commit/341425050f4f9b968b807dbd61942dabca8f6af1), Online functionality has been implemented. To get it working, resort to [GDK-Proton](https://github.com/Weather-OS/GDK-Proton)
 
 ### NOTES ABOUT THIS PROJECT
