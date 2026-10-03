@@ -1,0 +1,17 @@
+MODULE  = microsoft.windows.storage.pickers.dll
+UNIXLIB = microsoft.windows.storage.pickers.so
+IMPORTS = combase user32
+
+SOURCES = \
+	async.c \
+	async_private.idl \
+	classes.idl \
+	dialog.c \
+	main.c \
+	map.c \
+	microsoft.windows.storage.pickers.idl \
+	picker.c \
+	storagefile.c \
+	unixlib.c \
+	uwpsave.c \
+	vector.c

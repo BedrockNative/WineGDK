@@ -4377,6 +4377,29 @@ static void output_sources( struct makefile *make )
 
     strarray_add_uniq( &make->phony_targets, "all" );
 
+    /* Prebuilt native companions are data, not Wine modules to compile. */
+    for (arch = 1; arch < archs.count; arch++)
+    {
+        struct strarray files = get_expanded_make_var_array( make, strmake( "%s_NATIVE_DLLS", archs.str[arch] ));
+        if (make->disabled[arch]) continue;
+        STRARRAY_FOR_EACH( file, &files )
+        {
+            char *src = strmake( "%s/%s", arch_pe_dirs[arch], file );
+            strarray_add_uniq( &make->install[INSTALL_LIB], src );
+            install_data_file_src( make, src, src, strmake( "$(libdir)/wine/native/%s", arch_pe_dirs[arch] ));
+        }
+    }
+    if (make->obj_dir)
+    {
+        struct strarray files = get_expanded_make_var_array( make, "NATIVE_DATA" );
+        STRARRAY_FOR_EACH( file, &files )
+        {
+            strarray_add_uniq( &make->install[INSTALL_LIB], file );
+            install_data_file_src( make, file, file,
+                                   strmake( "$(datadir)/wine/native/%s", get_basename( make->obj_dir ) ));
+        }
+    }
+
     LIST_FOR_EACH_ENTRY( source, &make->sources, struct incl_file, entry )
     {
         char *obj = xstrdup( source->name );

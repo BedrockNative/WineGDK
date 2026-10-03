@@ -120,9 +120,20 @@ public:
     }
 
     HRESULT WINAPI XSystemGetAppSpecificDeviceId( INT32 appSpecificDeviceIdSize, LPSTR appSpecificDeviceId, SIZE_T *appSpecificDeviceIdUsed ) override
-    {    
-        FIXME( "appSpecificDeviceIdSize %d, appSpecificDeviceId %p, appSpecificDeviceIdUsed %p stub!\n", appSpecificDeviceIdSize, appSpecificDeviceId, appSpecificDeviceIdUsed );
-        return E_NOTIMPL;
+    {
+        /* Stable synthetic device id for Wine/Proton; required by some XSAPI presence paths. */
+        static const char Id[] = "orion-wine-device-0001";
+
+        TRACE( "appSpecificDeviceIdSize %d, appSpecificDeviceId %p, appSpecificDeviceIdUsed %p\n",
+               appSpecificDeviceIdSize, appSpecificDeviceId, appSpecificDeviceIdUsed );
+
+        if (!appSpecificDeviceId) return E_POINTER;
+        if (appSpecificDeviceIdSize < (INT32)(sizeof(Id)))
+            return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+
+        lstrcpynA( appSpecificDeviceId, Id, appSpecificDeviceIdSize );
+        if (appSpecificDeviceIdUsed) *appSpecificDeviceIdUsed = sizeof(Id);
+        return S_OK;
     }
 
     HRESULT WINAPI XSystemHandleTrack( XSystemHandleCallback *callback, void *context ) override

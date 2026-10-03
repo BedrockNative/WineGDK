@@ -226,6 +226,8 @@ struct request
     WCHAR *raw_headers;
     void *optional;
     DWORD optional_len;
+    DWORD send_total_len;   /* Content-Length from WinHttpSendRequest */
+    DWORD bytes_written;    /* body bytes actually written so far */
     struct netconn *netconn;
     DWORD security_flags;
     BOOL check_revocation;
@@ -298,6 +300,7 @@ struct socket
     struct object_header hdr;
     struct netconn *netconn;
     int keepalive_interval;
+    DWORD close_timeout;
     unsigned int send_buffer_size;
     enum socket_state state;
     struct queue send_q;

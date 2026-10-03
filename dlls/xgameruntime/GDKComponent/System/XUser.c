@@ -24,6 +24,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <ntdef.h>
+#include <stdio.h>
 #include <time.h>
 #include <wincrypt.h>
 #include <wininet.h>
@@ -169,6 +170,18 @@ struct policy
     UINT32 maxBodyBytes;
 };
 
+static void user_xsts_cache_clear( struct XUser *impl );
+
+struct xsts_entry
+{
+    char *relyingParty;
+    BOOL withTitle;
+    HSTRING token;
+    HSTRING userHash;
+};
+
+#define XSTS_CACHE_SIZE 4
+
 struct XUser
 {
     IUser IUser_iface;
@@ -183,8 +196,13 @@ struct XUser
     HSTRING accessToken;
     HSTRING refreshToken;
     HSTRING userToken;
+    HSTRING deviceToken;
+    HSTRING titleToken;
     HSTRING xstsToken;
     char *xstsRelyingParty;
+    BOOL xstsWithTitle;
+    struct xsts_entry xstsCache[XSTS_CACHE_SIZE];
+    UINT32 xstsCacheCount;
     SRWLOCK xstsLock;
 
     HSTRING publicGamerpic;
@@ -195,6 +213,7 @@ struct XUser
 
     BCRYPT_KEY_HANDLE key;
     char proofKey[PROOF_KEY_SIZE];
+    char deviceId[40]; /* {uuid} for device.auth ProofOfPossession */
 
     UINT32 endpointsLen;
     struct endpoint *endpoints;
@@ -260,6 +279,9 @@ static const char *user_GetRelyingParty( struct XUser *impl, const URL_COMPONENT
     if (best) return best->relyingParty;
     if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "playfabapi.com" ))
         return "http://playfab.xboxlive.com/";
+    /* Realms (overview/profile tab + Realms list) validates XSTS for its own RP; xboxlive.com -> 401. */
+    if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "realms.minecraft.net" ))
+        return "https://pocket.realms.minecraft.net/";
     return "http://xboxlive.com";
 }
 
@@ -283,8 +305,16 @@ static ULONG WINAPI user_Release( IUser *iface )
         if (impl->accessToken) WindowsDeleteString( impl->accessToken );
         if (impl->refreshToken) WindowsDeleteString( impl->refreshToken );
         if (impl->userToken) WindowsDeleteString( impl->userToken );
+        if (impl->deviceToken) WindowsDeleteString( impl->deviceToken );
+        if (impl->titleToken) WindowsDeleteString( impl->titleToken );
         if (impl->xstsToken) WindowsDeleteString( impl->xstsToken );
         free( impl->xstsRelyingParty );
+        for (UINT32 i = 0; i < impl->xstsCacheCount; ++i)
+        {
+            free( impl->xstsCache[i].relyingParty );
+            if (impl->xstsCache[i].token) WindowsDeleteString( impl->xstsCache[i].token );
+            if (impl->xstsCache[i].userHash) WindowsDeleteString( impl->xstsCache[i].userHash );
+        }
         if (impl->publicGamerpic) WindowsDeleteString( impl->publicGamerpic );
         if (impl->classicGamertag) WindowsDeleteString( impl->classicGamertag );
         if (impl->modernGamertag) WindowsDeleteString( impl->modernGamertag );
@@ -470,6 +500,8 @@ cleanup:
     return hr;
 }
 
+static HRESULT WINAPI user_SignData( IUser *iface, ULONG dataSize, UCHAR *data, ULONG signatureSize, UCHAR *signature );
+
 static HRESULT WINAPI user_RequestUserToken( IUser *iface )
 {
     const char *template = "{\"TokenType\":\"JWT\",\"RelyingParty\":\"http://auth.xboxlive.com\",\"Properties\":{\"AuthMethod\":\"RPS\",\"SiteName\":\"user.auth.xboxlive.com\",\"RpsTicket\":\"";
@@ -526,15 +558,645 @@ cleanup:
     return hr;
 }
 
-static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingParty )
+static HRESULT user_http_request_signed( struct XUser *impl, const WCHAR *hostName, const WCHAR *pathAndQuery,
+                                         char *data, UCHAR **buffer, SIZE_T *bufferSize )
+{
+    FILETIME timestamp;
+    UCHAR rawSignature[76] = {};
+    char *signBuf = NULL, signatureB64[128] = {}, *headersA = NULL;
+    WCHAR *headersW = NULL;
+    SIZE_T pathLen, dataLen;
+    char *ptr;
+    HRESULT hr = S_OK;
+    UINT32 wlen;
+    char pathA[512];
+
+    *buffer = NULL;
+    *bufferSize = 0;
+
+    pathLen = wcslen( pathAndQuery );
+    if (pathLen + 1 > sizeof(pathA)) return E_INVALIDARG;
+    if (!WideCharToMultiByte( CP_UTF8, 0, pathAndQuery, -1, pathA, sizeof(pathA), NULL, NULL ))
+        return HRESULT_FROM_WIN32( GetLastError() );
+
+    dataLen = data ? strlen( data ) : 0;
+    if (!(signBuf = calloc( 1, 14 + 5 + pathLen + 1 + 1 + dataLen + 1 ))) return E_OUTOFMEMORY;
+
+    GetSystemTimeAsFileTime( &timestamp );
+    signBuf[3] = 1;
+    memcpy( rawSignature, signBuf, 4 );
+    signBuf[5]  = (timestamp.dwHighDateTime >> 24) & 0xff;
+    signBuf[6]  = (timestamp.dwHighDateTime >> 16) & 0xff;
+    signBuf[7]  = (timestamp.dwHighDateTime >> 8 ) & 0xff;
+    signBuf[8]  =  timestamp.dwHighDateTime        & 0xff;
+    signBuf[9]  = (timestamp.dwLowDateTime  >> 24) & 0xff;
+    signBuf[10] = (timestamp.dwLowDateTime  >> 16) & 0xff;
+    signBuf[11] = (timestamp.dwLowDateTime  >> 8 ) & 0xff;
+    signBuf[12] =  timestamp.dwLowDateTime         & 0xff;
+    memcpy( rawSignature + 4, signBuf + 5, 8 );
+
+    ptr = signBuf + 14;
+    memcpy( ptr, "POST", 4 );
+    ptr += 5;
+    memcpy( ptr, pathA, pathLen );
+    ptr += pathLen + 1;
+    ptr++; /* empty Authorization */
+    if (dataLen) memcpy( ptr, data, dataLen );
+    ptr += dataLen + 1;
+
+    if (FAILED(hr = user_SignData( &impl->IUser_iface, (ULONG)(ptr - signBuf), (UCHAR *)signBuf, 64, rawSignature + 12 )))
+        goto cleanup;
+    if (FAILED(hr = encode_base64( 76, rawSignature, sizeof(signatureB64) - 1, signatureB64, TRUE )))
+        goto cleanup;
+
+    if (!(headersA = calloc( 1, 160 + strlen( signatureB64 ) )))
+    {
+        hr = E_OUTOFMEMORY;
+        goto cleanup;
+    }
+    sprintf( headersA, "Content-Type: application/json; charset=utf-8\r\n"
+                       "x-xbl-contract-version: 1\r\nSignature: %s", signatureB64 );
+
+    wlen = MultiByteToWideChar( CP_UTF8, 0, headersA, -1, NULL, 0 );
+    if (!wlen || !(headersW = calloc( wlen, sizeof(WCHAR) )))
+    {
+        hr = E_OUTOFMEMORY;
+        goto cleanup;
+    }
+    MultiByteToWideChar( CP_UTF8, 0, headersA, -1, headersW, wlen );
+
+    hr = http_request( L"POST", hostName, pathAndQuery, data, headersW, ACCEPT_JSON, buffer, bufferSize );
+
+cleanup:
+    free( signBuf );
+    free( headersA );
+    free( headersW );
+    return hr;
+}
+
+static UINT32 user_resolve_presence_title_id( void )
+{
+    /*
+     * TitleToken must match the MSA app that minted it.
+     * Windows MSA (40159362) still fails PoP for 896928775 in WineGDK; Android MSA
+     * mints 1739947436 and that unblocks join + presence claims.
+     * Keep Win32/Windows TitleId only when MSA is the Windows Bedrock client.
+     */
+    if (msaAppId && !strcmp( msaAppId, "0000000048183522" ))
+        return 1739947436u; /* Android Bedrock — required for TitleToken with Android MSA */
+    return titleId ? titleId : 896928775u;
+}
+
+static const char *user_resolve_device_type( void )
+{
+    /* Pair DeviceType with TitleId so XSTS claims stay coherent for sessiondirectory/presence. */
+    if (msaAppId && !strcmp( msaAppId, "0000000048183522" ))
+        return "Android";
+    return "Win32";
+}
+
+static HRESULT user_request_title_token_sisu( struct XUser *impl )
+{
+    char *body = NULL, *deviceTok = NULL, *access = NULL;
+    UCHAR *buffer = NULL;
+    SIZE_T bufferSize = 0;
+    IJsonObject *object = NULL, *title = NULL;
+    HRESULT hr;
+    UINT32 wAccessLen;
+    const WCHAR *wAccess;
+
+    if (!impl->accessToken) return E_UNEXPECTED;
+    if (FAILED(hr = HSTRINGToMultiByte( impl->deviceToken, &deviceTok ))) return hr;
+
+    wAccess = WindowsGetStringRawBuffer( impl->accessToken, &wAccessLen );
+    if (!(access = calloc( wAccessLen * 4 + 1, 1 )))
+    {
+        free( deviceTok );
+        return E_OUTOFMEMORY;
+    }
+    if (!WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wAccess, wAccessLen, access, wAccessLen * 4, NULL, NULL ))
+    {
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+        free( deviceTok );
+        free( access );
+        return hr;
+    }
+    /* OAuth access token must be raw; SISU wants t=<token>. Avoid t=d=... double prefix. */
+    {
+        char *raw = access;
+        if (!strncmp( raw, "d=", 2 ) || !strncmp( raw, "t=", 2 )) raw += 2;
+        if (raw != access) memmove( access, raw, strlen( raw ) + 1 );
+    }
+
+    if (!(body = calloc( 1, 768 + PROOF_KEY_SIZE + strlen( deviceTok ) + strlen( access ) + (msaAppId ? strlen( msaAppId ) : 0) )))
+    {
+        free( deviceTok );
+        free( access );
+        return E_OUTOFMEMORY;
+    }
+
+    sprintf( body,
+             "{\"Sandbox\":\"RETAIL\",\"UseModernGamertag\":true,\"AppId\":\"%s\","
+             "\"AccessToken\":\"t=%s\",\"DeviceToken\":\"%s\",\"ProofKey\":",
+             msaAppId ? msaAppId : "0000000048183522", access, deviceTok );
+    strncat( body, impl->proofKey, PROOF_KEY_SIZE );
+    strcat( body, ",\"RelyingParty\":\"http://xboxlive.com\"}" );
+
+    free( deviceTok );
+    free( access );
+
+    if (FAILED(hr = user_http_request_signed( impl, L"sisu.xboxlive.com", L"/authorize", body, &buffer, &bufferSize )))
+    {
+        WARN( "SISU authorize failed, hr %#lx.\n", hr );
+        goto cleanup;
+    }
+    if (FAILED(hr = parse_json( (char *)buffer, bufferSize, &object ))) goto cleanup;
+    if (FAILED(hr = get_json_object( object, L"TitleToken", &title ))) goto cleanup;
+    if (FAILED(hr = get_json_string( title, L"Token", &impl->titleToken ))) goto cleanup;
+    TRACE( "Obtained Xbox title token via SISU.\n" );
+
+cleanup:
+    free( body );
+    free( buffer );
+    if (title) IJsonObject_Release( title );
+    if (object) IJsonObject_Release( object );
+    return hr;
+}
+
+static HRESULT user_ensure_device_and_title_tokens( struct XUser *impl )
+{
+    char *body = NULL, titleIdStr[16], *deviceTok = NULL;
+    UCHAR *buffer = NULL;
+    SIZE_T bufferSize = 0;
+    IJsonObject *object = NULL;
+    HRESULT hr = S_OK;
+    UINT32 tid = user_resolve_presence_title_id();
+    const char *deviceType = user_resolve_device_type();
+
+    if (impl->deviceToken && impl->titleToken) return S_OK;
+
+    if (!impl->deviceId[0])
+    {
+        UCHAR rnd[16];
+        if (!NT_SUCCESS( BCryptGenRandom( NULL, rnd, sizeof(rnd), BCRYPT_USE_SYSTEM_PREFERRED_RNG ) ))
+            return E_FAIL;
+        rnd[6] = (rnd[6] & 0x0f) | 0x40;
+        rnd[8] = (rnd[8] & 0x3f) | 0x80;
+        sprintf( impl->deviceId,
+                 "{%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x}",
+                 rnd[0], rnd[1], rnd[2], rnd[3], rnd[4], rnd[5], rnd[6], rnd[7],
+                 rnd[8], rnd[9], rnd[10], rnd[11], rnd[12], rnd[13], rnd[14], rnd[15] );
+    }
+
+    snprintf( titleIdStr, sizeof(titleIdStr), "%u", tid );
+
+    if (!impl->deviceToken)
+    {
+        const char *version = !strcmp( deviceType, "Android" ) ? "13.0.0" : "10.0.22621";
+        int use_serial = !strcmp( deviceType, "Android" ) || !strcmp( deviceType, "iOS" )
+                         || !strcmp( deviceType, "Nintendo" );
+        if (!(body = calloc( 1, 640 + PROOF_KEY_SIZE ))) return E_OUTOFMEMORY;
+        /* SerialNumber is for mobile/console; Win32 rejects extra fields in some gateways. */
+        if (use_serial)
+            sprintf( body,
+                     "{\"Properties\":{\"AuthMethod\":\"ProofOfPossession\",\"Id\":\"%s\","
+                     "\"DeviceType\":\"%s\",\"SerialNumber\":\"%s\",\"Version\":\"%s\",\"ProofKey\":",
+                     impl->deviceId, deviceType, impl->deviceId, version );
+        else
+            sprintf( body,
+                     "{\"Properties\":{\"AuthMethod\":\"ProofOfPossession\",\"Id\":\"%s\","
+                     "\"DeviceType\":\"%s\",\"Version\":\"%s\",\"ProofKey\":",
+                     impl->deviceId, deviceType, version );
+        strncat( body, impl->proofKey, PROOF_KEY_SIZE );
+        strcat( body, "},\"RelyingParty\":\"http://auth.xboxlive.com\",\"TokenType\":\"JWT\"}" );
+
+        if (FAILED(hr = user_http_request_signed( impl, L"device.auth.xboxlive.com", L"/device/authenticate",
+                                                  body, &buffer, &bufferSize )))
+        {
+            WARN( "Device token request failed, hr %#lx.\n", hr );
+            goto cleanup;
+        }
+        if (FAILED(hr = parse_json( (char *)buffer, bufferSize, &object ))) goto cleanup;
+        if (FAILED(hr = get_json_string( object, L"Token", &impl->deviceToken ))) goto cleanup;
+        IJsonObject_Release( object ); object = NULL;
+        free( buffer ); buffer = NULL; bufferSize = 0;
+        free( body ); body = NULL;
+        TRACE( "Obtained Xbox device token (%s).\n", deviceType );
+    }
+
+    if (!impl->titleToken)
+    {
+        char *access = NULL;
+        UINT32 wAccessLen = 0;
+        const WCHAR *wAccess;
+        HRESULT hr_sisu, hr_rps;
+
+        /* 1) SISU */
+        if (SUCCEEDED(hr_sisu = user_request_title_token_sisu( impl )))
+            goto cleanup;
+
+        WARN( "SISU title token failed (%#lx); trying title.auth.\n", hr_sisu );
+
+        if (FAILED(hr = HSTRINGToMultiByte( impl->deviceToken, &deviceTok ))) goto cleanup;
+
+        /*
+         * 2) title.auth with RpsTicket — same ticket bytes as user.auth (no strip/reprefix).
+         *    Do NOT send TitleId with RpsTicket (that yields HTTP 400); title comes from MSA app.
+         */
+        if (impl->accessToken)
+        {
+            wAccess = WindowsGetStringRawBuffer( impl->accessToken, &wAccessLen );
+            if ((access = calloc( wAccessLen * 4 + 1, 1 )) &&
+                WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wAccess, wAccessLen, access, wAccessLen * 4, NULL, NULL ))
+            {
+                if ((body = calloc( 1, 800 + PROOF_KEY_SIZE + strlen( deviceTok ) + strlen( access ) )))
+                {
+                    sprintf( body,
+                             "{\"Properties\":{\"AuthMethod\":\"RPS\",\"SiteName\":\"user.auth.xboxlive.com\","
+                             "\"RpsTicket\":\"%s\",\"DeviceToken\":\"%s\",\"ProofKey\":",
+                             access, deviceTok );
+                    strncat( body, impl->proofKey, PROOF_KEY_SIZE );
+                    strcat( body, "},\"RelyingParty\":\"http://auth.xboxlive.com\",\"TokenType\":\"JWT\"}" );
+
+                    hr_rps = user_http_request_signed( impl, L"title.auth.xboxlive.com", L"/title/authenticate",
+                                                       body, &buffer, &bufferSize );
+                    free( body ); body = NULL;
+                    if (SUCCEEDED(hr_rps) &&
+                        SUCCEEDED(hr_rps = parse_json( (char *)buffer, bufferSize, &object )) &&
+                        SUCCEEDED(hr_rps = get_json_string( object, L"Token", &impl->titleToken )))
+                    {
+                        {
+                            FILE *tf = fopen( "/home/perfect/OrionBE/logs/title-token-dump.txt", "a" );
+                            if (tf)
+                            {
+                                fprintf( tf, "title.auth RpsTicket OK TitleIdHint=%s bytes=%zu\n",
+                                         titleIdStr, bufferSize );
+                                fwrite( buffer, 1, bufferSize < 4000 ? bufferSize : 4000, tf );
+                                fputc( '\n', tf );
+                                fclose( tf );
+                            }
+                        }
+                        free( access ); access = NULL;
+                        free( buffer ); buffer = NULL; bufferSize = 0;
+                        IJsonObject_Release( object ); object = NULL;
+                        TRACE( "Obtained Xbox title token via RpsTicket (MSA app title).\n" );
+                        goto title_ok;
+                    }
+                    WARN( "title.auth RpsTicket failed (%#lx); trying ProofOfPossession TitleId=%s.\n",
+                          hr_rps, titleIdStr );
+                    free( buffer ); buffer = NULL; bufferSize = 0;
+                    if (object) { IJsonObject_Release( object ); object = NULL; }
+                }
+            }
+            free( access ); access = NULL;
+        }
+
+        /* 3) ProofOfPossession + TitleId (resolved title first; Android fallback for join) */
+        {
+            const char *title_attempts[2];
+            int n_attempts = 0;
+            title_attempts[n_attempts++] = titleIdStr;
+            if (strcmp( titleIdStr, "1739947436" ))
+                title_attempts[n_attempts++] = "1739947436";
+
+            hr = E_FAIL;
+            for (int ai = 0; ai < n_attempts; ai++)
+            {
+                free( body ); body = NULL;
+                free( buffer ); buffer = NULL; bufferSize = 0;
+                if (object) { IJsonObject_Release( object ); object = NULL; }
+
+                if (!(body = calloc( 1, 640 + PROOF_KEY_SIZE + strlen( deviceTok ) )))
+                {
+                    hr = E_OUTOFMEMORY;
+                    goto cleanup;
+                }
+                sprintf( body,
+                         "{\"Properties\":{\"AuthMethod\":\"ProofOfPossession\",\"DeviceToken\":\"%s\","
+                         "\"TitleId\":\"%s\",\"ProofKey\":",
+                         deviceTok, title_attempts[ai] );
+                strncat( body, impl->proofKey, PROOF_KEY_SIZE );
+                strcat( body, "},\"RelyingParty\":\"http://auth.xboxlive.com\",\"TokenType\":\"JWT\"}" );
+
+                if (FAILED(hr = user_http_request_signed( impl, L"title.auth.xboxlive.com", L"/title/authenticate",
+                                                          body, &buffer, &bufferSize )))
+                {
+                    FILE *tf = fopen( "/home/perfect/OrionBE/logs/title-token-dump.txt", "a" );
+                    if (tf)
+                    {
+                        fprintf( tf, "title.auth PoP FAIL TitleId=%s hr=%#lx bytes=%zu\n",
+                                 title_attempts[ai], (unsigned long)hr, bufferSize );
+                        if (buffer && bufferSize)
+                            fwrite( buffer, 1, bufferSize < 2000 ? bufferSize : 2000, tf );
+                        fputc( '\n', tf );
+                        fclose( tf );
+                    }
+                    WARN( "Title PoP auth TitleId=%s failed, hr %#lx.\n", title_attempts[ai], hr );
+                    continue;
+                }
+                if (FAILED(hr = parse_json( (char *)buffer, bufferSize, &object ))) continue;
+                if (FAILED(hr = get_json_string( object, L"Token", &impl->titleToken ))) continue;
+                {
+                    FILE *tf = fopen( "/home/perfect/OrionBE/logs/title-token-dump.txt", "a" );
+                    if (tf)
+                    {
+                        fprintf( tf, "title.auth PoP OK TitleId=%s bytes=%zu\n", title_attempts[ai], bufferSize );
+                        fwrite( buffer, 1, bufferSize < 4000 ? bufferSize : 4000, tf );
+                        fputc( '\n', tf );
+                        fclose( tf );
+                    }
+                }
+                TRACE( "Obtained Xbox title token for TitleId %s.\n", title_attempts[ai] );
+                goto title_ok;
+            }
+        }
+
+        WARN( "Title PoP auth failed for all TitleIds; falling back to legacy RPS TitleId-only.\n" );
+        free( body ); body = NULL;
+        free( buffer ); buffer = NULL; bufferSize = 0;
+        if (object) { IJsonObject_Release( object ); object = NULL; }
+
+        /* 4) Legacy TitleId-only RPS — known to restore friends join */
+        if (!(body = calloc( 1, 640 + PROOF_KEY_SIZE + strlen( deviceTok ) )))
+        {
+            hr = E_OUTOFMEMORY;
+            goto cleanup;
+        }
+        sprintf( body,
+                 "{\"Properties\":{\"AuthMethod\":\"RPS\",\"DeviceToken\":\"%s\",\"TitleId\":\"%s\",\"ProofKey\":",
+                 deviceTok, titleIdStr );
+        strncat( body, impl->proofKey, PROOF_KEY_SIZE );
+        strcat( body, "},\"RelyingParty\":\"http://auth.xboxlive.com\",\"TokenType\":\"JWT\"}" );
+
+        if (FAILED(hr = user_http_request_signed( impl, L"title.auth.xboxlive.com", L"/title/authenticate",
+                                                  body, &buffer, &bufferSize )))
+        {
+            WARN( "Title token request failed, hr %#lx.\n", hr );
+            goto cleanup;
+        }
+        if (FAILED(hr = parse_json( (char *)buffer, bufferSize, &object ))) goto cleanup;
+        if (FAILED(hr = get_json_string( object, L"Token", &impl->titleToken ))) goto cleanup;
+        {
+            FILE *tf = fopen( "/home/perfect/OrionBE/logs/title-token-dump.txt", "a" );
+            if (tf)
+            {
+                fprintf( tf, "title.auth legacy RPS OK TitleId=%s bytes=%zu\n", titleIdStr, bufferSize );
+                fwrite( buffer, 1, bufferSize < 4000 ? bufferSize : 4000, tf );
+                fputc( '\n', tf );
+                fclose( tf );
+            }
+        }
+        TRACE( "Obtained Xbox title token for TitleId %s.\n", titleIdStr );
+
+title_ok:
+        if (impl->xstsToken)
+        {
+            WindowsDeleteString( impl->xstsToken );
+            impl->xstsToken = NULL;
+        }
+        free( impl->xstsRelyingParty );
+        impl->xstsRelyingParty = NULL;
+        user_xsts_cache_clear( impl );
+    }
+
+cleanup:
+    free( body );
+    free( buffer );
+    free( deviceTok );
+    if (object) IJsonObject_Release( object );
+    /* DeviceToken without TitleToken poisons XSTS for peoplehub; fall back to UserToken-only. */
+    if (!impl->titleToken && impl->deviceToken)
+    {
+        WARN( "Dropping device token without title token to preserve social XSTS.\n" );
+        WindowsDeleteString( impl->deviceToken );
+        impl->deviceToken = NULL;
+    }
+    if (impl->deviceToken && impl->titleToken) return S_OK;
+    return hr;
+}
+
+
+static HRESULT user_publish_presence_online( struct XUser *impl )
+{
+    static time_t last_publish;
+    WCHAR *headers = NULL, path[160];
+    char body[96];
+    UCHAR *buffer = NULL;
+    SIZE_T bufferSize = 0;
+    UINT32 userHashLen = 0, tokenLen = 0, headersLen;
+    const WCHAR *userHash, *token;
+    UINT32 tid = user_resolve_presence_title_id();
+    time_t now = time( NULL );
+    HRESULT hr;
+
+    if (!impl->xstsToken || !impl->userHash || !impl->xuid) return E_UNEXPECTED;
+    if (!impl->deviceToken || !impl->titleToken) return S_FALSE;
+    if (last_publish && now != (time_t)-1 && (now - last_publish) < 20) return S_OK;
+
+    snprintf( body, sizeof(body), "{\"id\":\"%u\",\"state\":\"active\"}", tid );
+    swprintf( path, ARRAY_SIZE(path), L"/users/xuid(%llu)/devices/current/titles/current",
+              (unsigned long long)impl->xuid );
+
+    userHash = WindowsGetStringRawBuffer( impl->userHash, &userHashLen );
+    token = WindowsGetStringRawBuffer( impl->xstsToken, &tokenLen );
+    headersLen = (UINT32)(wcslen( L"Content-Type: application/json\r\nx-xbl-contract-version: 3\r\nAuthorization: XBL3.0 x=;" )
+                 + userHashLen + tokenLen + 8);
+    if (!(headers = calloc( headersLen + 1, sizeof(WCHAR) ))) return E_OUTOFMEMORY;
+    wcscpy( headers, L"Content-Type: application/json\r\nx-xbl-contract-version: 3\r\nAuthorization: XBL3.0 x=" );
+    wcsncat( headers, userHash, userHashLen );
+    wcscat( headers, L";" );
+    wcsncat( headers, token, tokenLen );
+
+    hr = http_request( L"POST", L"userpresence.xboxlive.com", path, body, headers, ACCEPT_JSON, &buffer, &bufferSize );
+    {
+        FILE *df = fopen( "/home/perfect/OrionBE/logs/presence-publish.txt", "a" );
+        if (df)
+        {
+            fprintf( df, "publish hr=%#lx tid=%u body=%s bytes=%zu\n", (unsigned long)hr, tid, body, bufferSize );
+            if (buffer && bufferSize) fwrite( buffer, 1, bufferSize < 500 ? bufferSize : 500, df );
+            fputc( '\n', df );
+            fclose( df );
+        }
+    }
+    if (SUCCEEDED(hr))
+    {
+        last_publish = now;
+        TRACE( "Published Xbox presence online for TitleId %u.\n", tid );
+    }
+    else
+        WARN( "Presence publish failed, hr %#lx.\n", hr );
+
+    free( headers );
+    free( buffer );
+    return hr;
+}
+
+static void user_xsts_cache_clear( struct XUser *impl )
+{
+    for (UINT32 i = 0; i < impl->xstsCacheCount; ++i)
+    {
+        free( impl->xstsCache[i].relyingParty );
+        if (impl->xstsCache[i].token) WindowsDeleteString( impl->xstsCache[i].token );
+        if (impl->xstsCache[i].userHash) WindowsDeleteString( impl->xstsCache[i].userHash );
+        impl->xstsCache[i].relyingParty = NULL;
+        impl->xstsCache[i].token = NULL;
+        impl->xstsCache[i].userHash = NULL;
+    }
+    impl->xstsCacheCount = 0;
+}
+
+static HRESULT user_xsts_cache_store( struct XUser *impl, const char *relyingParty, BOOL withTitle,
+                                     HSTRING token, HSTRING userHash )
+{
+    struct xsts_entry *entry = NULL;
+    HSTRING tokenCopy = NULL, hashCopy = NULL;
+    char *rpCopy = NULL;
+    HRESULT hr;
+
+    for (UINT32 i = 0; i < impl->xstsCacheCount; ++i)
+    {
+        if (impl->xstsCache[i].withTitle == withTitle &&
+            impl->xstsCache[i].relyingParty &&
+            !strcmp( impl->xstsCache[i].relyingParty, relyingParty ))
+        {
+            entry = &impl->xstsCache[i];
+            break;
+        }
+    }
+    if (!entry)
+    {
+        if (impl->xstsCacheCount >= XSTS_CACHE_SIZE)
+        {
+            free( impl->xstsCache[0].relyingParty );
+            if (impl->xstsCache[0].token) WindowsDeleteString( impl->xstsCache[0].token );
+            if (impl->xstsCache[0].userHash) WindowsDeleteString( impl->xstsCache[0].userHash );
+            memmove( &impl->xstsCache[0], &impl->xstsCache[1],
+                     (XSTS_CACHE_SIZE - 1) * sizeof(impl->xstsCache[0]) );
+            impl->xstsCacheCount = XSTS_CACHE_SIZE - 1;
+            memset( &impl->xstsCache[impl->xstsCacheCount], 0, sizeof(impl->xstsCache[0]) );
+        }
+        entry = &impl->xstsCache[impl->xstsCacheCount++];
+    }
+
+    if (FAILED(hr = WindowsDuplicateString( token, &tokenCopy ))) return hr;
+    if (FAILED(hr = WindowsDuplicateString( userHash, &hashCopy )))
+    {
+        WindowsDeleteString( tokenCopy );
+        return hr;
+    }
+    if (!(rpCopy = strdup( relyingParty )))
+    {
+        WindowsDeleteString( tokenCopy );
+        WindowsDeleteString( hashCopy );
+        return E_OUTOFMEMORY;
+    }
+
+    free( entry->relyingParty );
+    if (entry->token) WindowsDeleteString( entry->token );
+    if (entry->userHash) WindowsDeleteString( entry->userHash );
+    entry->relyingParty = rpCopy;
+    entry->withTitle = withTitle;
+    entry->token = tokenCopy;
+    entry->userHash = hashCopy;
+    return S_OK;
+}
+
+static BOOL user_xsts_cache_activate( struct XUser *impl, const char *relyingParty, BOOL withTitle )
+{
+    HSTRING tokenCopy = NULL, hashCopy = NULL;
+    char *rpCopy = NULL;
+
+    for (UINT32 i = 0; i < impl->xstsCacheCount; ++i)
+    {
+        struct xsts_entry *entry = &impl->xstsCache[i];
+        if (entry->withTitle != withTitle || !entry->relyingParty ||
+            strcmp( entry->relyingParty, relyingParty ) || !entry->token || !entry->userHash)
+            continue;
+        if (FAILED(WindowsDuplicateString( entry->token, &tokenCopy ))) return FALSE;
+        if (FAILED(WindowsDuplicateString( entry->userHash, &hashCopy )))
+        {
+            WindowsDeleteString( tokenCopy );
+            return FALSE;
+        }
+        if (!(rpCopy = strdup( relyingParty )))
+        {
+            WindowsDeleteString( tokenCopy );
+            WindowsDeleteString( hashCopy );
+            return FALSE;
+        }
+        if (impl->xstsToken) WindowsDeleteString( impl->xstsToken );
+        if (impl->userHash) WindowsDeleteString( impl->userHash );
+        free( impl->xstsRelyingParty );
+        impl->xstsToken = tokenCopy;
+        impl->userHash = hashCopy;
+        impl->xstsRelyingParty = rpCopy;
+        impl->xstsWithTitle = withTitle;
+        TRACE( "Reusing cached XSTS rp=%s withTitle=%d.\n", debugstr_a( relyingParty ), withTitle );
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL path_contains( const char *path, DWORD pathLen, const char *needle )
+{
+    SIZE_T nlen = strlen( needle );
+    if (!path || pathLen < nlen || !nlen) return FALSE;
+    for (DWORD i = 0; i + nlen <= pathLen; ++i)
+    {
+        if (!memcmp( path + i, needle, nlen )) return TRUE;
+    }
+    return FALSE;
+}
+
+/* Default: include Device+Title (join / multiplayer / presence publish).
+ * Social graph + presence *reads* poison or 403 with Android title claims — omit there.
+ * Keep title claims for userpresence titles/current (Online heartbeat). */
+static BOOL url_wants_title_claims( const URL_COMPONENTSA *url, const char *relyingParty )
+{
+    if (relyingParty && !strcmp( relyingParty, "http://playfab.xboxlive.com/" ))
+        return TRUE;
+    if (!url || !url->lpszHostName || !url->dwHostNameLength) return TRUE;
+
+    if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "peoplehub.xboxlive.com" ))
+        return FALSE;
+    if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "social.xboxlive.com" ))
+        return FALSE;
+    if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "privacy.xboxlive.com" ))
+        return FALSE;
+    if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "profile.xboxlive.com" ))
+        return FALSE;
+    /* Android title claims make achievements for the Windows title (Overview tab) come back empty. */
+    if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "achievements.xboxlive.com" ))
+        return FALSE;
+    if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "userstats.xboxlive.com" ))
+        return FALSE;
+    if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "titlehub.xboxlive.com" ))
+        return FALSE;
+    if (endpoint_host_matches( url->lpszHostName, url->dwHostNameLength, "userpresence.xboxlive.com" ))
+    {
+        /* Prefer title claims only for Online publish; reads stay UserToken-only. */
+        if (url->lpszUrlPath)
+        {
+            DWORD pathLen = url->dwUrlPathLength;
+            if (!pathLen || pathLen == (DWORD)-1)
+                pathLen = (DWORD)strlen( url->lpszUrlPath );
+            if (path_contains( url->lpszUrlPath, pathLen, "/titles/current" ))
+                return TRUE;
+        }
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingParty, BOOL withTitle )
 {
     static const char prefix[] = "{\"TokenType\":\"JWT\",\"RelyingParty\":\"";
-    static const char properties[] = "\",\"Properties\":{\"SandboxId\":\"RETAIL\",\"ProofKey\":";
-    static const char userTokens[] = ",\"UserTokens\":[\"";
     IJsonObject *child = NULL, *claims = NULL, *object = NULL;
     HSTRING newToken = NULL, newUserHash = NULL, xuid = NULL;
-    UINT32 tokenLen, wTokenLen;
+    UINT32 tokenLen, wTokenLen, deviceTokLen = 0, titleTokLen = 0;
     char *body = NULL, *newRelyingParty = NULL, *token;
+    char *deviceTok = NULL, *titleTok = NULL;
     IJsonArray *array = NULL;
     UCHAR *buffer = NULL;
     const WCHAR *wToken;
@@ -542,12 +1204,29 @@ static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingP
     UINT64 newXuid;
     HRESULT hr;
 
-    TRACE( "impl %p, relyingParty %s.\n", impl, debugstr_a( relyingParty ) );
+    TRACE( "impl %p, relyingParty %s, withTitle %d.\n", impl, debugstr_a( relyingParty ), withTitle );
+
+    if (withTitle)
+    {
+        if (FAILED(hr = user_ensure_device_and_title_tokens( impl )))
+        {
+            WARN( "Continuing XSTS without device/title tokens, hr %#lx.\n", hr );
+            hr = S_OK;
+        }
+    }
 
     wToken = WindowsGetStringRawBuffer( impl->userToken, &wTokenLen );
     if (!(tokenLen = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wToken, wTokenLen, NULL, 0, NULL, NULL ))) goto error;
-    if (!(body = calloc( strlen( prefix ) + strlen( relyingParty ) + strlen( properties ) +
-            PROOF_KEY_SIZE + strlen( userTokens ) + tokenLen + strlen( "\"]}}" ) + 1, sizeof(char) )))
+    if (withTitle)
+    {
+        if (impl->deviceToken && FAILED(hr = HSTRINGToMultiByte( impl->deviceToken, &deviceTok ))) goto cleanup;
+        if (impl->titleToken && FAILED(hr = HSTRINGToMultiByte( impl->titleToken, &titleTok ))) goto cleanup;
+    }
+    deviceTokLen = deviceTok ? strlen( deviceTok ) : 0;
+    titleTokLen = titleTok ? strlen( titleTok ) : 0;
+
+    if (!(body = calloc( strlen( prefix ) + strlen( relyingParty ) + PROOF_KEY_SIZE + tokenLen +
+            deviceTokLen + titleTokLen + 256, sizeof(char) )))
     {
         hr = E_OUTOFMEMORY;
         goto cleanup;
@@ -555,9 +1234,22 @@ static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingP
 
     strcpy( body, prefix );
     strcat( body, relyingParty );
-    strcat( body, properties );
+    strcat( body, "\",\"Properties\":{\"SandboxId\":\"RETAIL\"" );
+    if (deviceTok)
+    {
+        strcat( body, ",\"DeviceToken\":\"" );
+        strcat( body, deviceTok );
+        strcat( body, "\"" );
+    }
+    if (titleTok)
+    {
+        strcat( body, ",\"TitleToken\":\"" );
+        strcat( body, titleTok );
+        strcat( body, "\"" );
+    }
+    strcat( body, ",\"ProofKey\":" );
     strncat( body, impl->proofKey, PROOF_KEY_SIZE );
-    strcat( body, userTokens );
+    strcat( body, ",\"UserTokens\":[\"" );
     token = body + strlen( body );
     if (!WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wToken, wTokenLen, token, tokenLen, NULL, NULL )) goto error;
     strcat( body, "\"]}}" );
@@ -587,20 +1279,30 @@ static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingP
         goto cleanup;
     }
 
+    if (FAILED(hr = user_xsts_cache_store( impl, relyingParty, withTitle, newToken, newUserHash )))
+        goto cleanup;
+
     if (impl->xstsToken) WindowsDeleteString( impl->xstsToken );
     if (impl->userHash) WindowsDeleteString( impl->userHash );
     free( impl->xstsRelyingParty );
     impl->xstsToken = newToken;
     impl->userHash = newUserHash;
     impl->xstsRelyingParty = newRelyingParty;
+    impl->xstsWithTitle = withTitle;
     impl->xuid = newXuid;
     newToken = NULL;
     newUserHash = NULL;
     newRelyingParty = NULL;
 
+    if (withTitle && impl->deviceToken && impl->titleToken &&
+        relyingParty && !strcmp( relyingParty, "http://xboxlive.com" ))
+        user_publish_presence_online( impl );
+
 cleanup:
     free( body );
     free( buffer );
+    free( deviceTok );
+    free( titleTok );
     free( newRelyingParty );
     if (newToken) WindowsDeleteString( newToken );
     if (newUserHash) WindowsDeleteString( newUserHash );
@@ -616,9 +1318,23 @@ error:
     goto cleanup;
 }
 
+static HRESULT user_ensure_xsts_for_url( struct XUser *impl, const URL_COMPONENTSA *url, const char *relyingParty )
+{
+    BOOL withTitle = url_wants_title_claims( url, relyingParty );
+
+    if (impl->xstsRelyingParty && impl->xstsToken && impl->userHash &&
+        !strcmp( impl->xstsRelyingParty, relyingParty ) && impl->xstsWithTitle == withTitle)
+        return S_OK;
+
+    if (user_xsts_cache_activate( impl, relyingParty, withTitle ))
+        return S_OK;
+
+    return user_request_xsts_token( impl, relyingParty, withTitle );
+}
+
 static HRESULT WINAPI user_RequestXstsToken( IUser *iface )
 {
-    return user_request_xsts_token( impl_from_IUser( iface ), "http://xboxlive.com" );
+    return user_request_xsts_token( impl_from_IUser( iface ), "http://xboxlive.com", TRUE );
 }
 
 static HRESULT WINAPI user_GenerateKeyPair( IUser *iface )
@@ -656,9 +1372,25 @@ cleanup:
     if (FAILED(hr)) BCryptDestroyKey( key );
     else
     {
+        UCHAR rnd[16];
         memcpy( impl->proofKey, proofKey, PROOF_KEY_SIZE ); /* ignore null terminator */
         if (impl->key) BCryptDestroyKey( impl->key );
         impl->key = key;
+        /* New proof key requires a fresh device id; old device/title tokens are invalid. */
+        if (impl->deviceToken) { WindowsDeleteString( impl->deviceToken ); impl->deviceToken = NULL; }
+        if (impl->titleToken) { WindowsDeleteString( impl->titleToken ); impl->titleToken = NULL; }
+        user_xsts_cache_clear( impl );
+        if (impl->xstsToken) { WindowsDeleteString( impl->xstsToken ); impl->xstsToken = NULL; }
+        free( impl->xstsRelyingParty ); impl->xstsRelyingParty = NULL;
+        if (NT_SUCCESS( BCryptGenRandom( NULL, rnd, sizeof(rnd), BCRYPT_USE_SYSTEM_PREFERRED_RNG ) ))
+        {
+            rnd[6] = (rnd[6] & 0x0f) | 0x40;
+            rnd[8] = (rnd[8] & 0x3f) | 0x80;
+            sprintf( impl->deviceId,
+                     "{%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x}",
+                     rnd[0], rnd[1], rnd[2], rnd[3], rnd[4], rnd[5], rnd[6], rnd[7],
+                     rnd[8], rnd[9], rnd[10], rnd[11], rnd[12], rnd[13], rnd[14], rnd[15] );
+        }
     }
     return hr;
 }
@@ -707,7 +1439,8 @@ static HRESULT WINAPI user_CacheEndpoints( IUser *iface )
 
     TRACE( "iface %p.\n", iface );
 
-    if (FAILED(hr = http_request( L"GET", L"title.mgmt.xboxlive.com", L"/titles/default/endpoints?type=1", NULL, NULL, ACCEPT_JSON, &buffer, &size )))
+    /* Real Xbox Live host is title.mgt (not title.mgmt); wrong name → ERROR_INTERNET_NAME_NOT_RESOLVED. */
+    if (FAILED(hr = http_request( L"GET", L"title.mgt.xboxlive.com", L"/titles/default/endpoints?type=1", NULL, NULL, ACCEPT_JSON, &buffer, &size )))
         return hr;
     if (FAILED(hr = parse_json( (char *)buffer, size, &object ))) goto cleanup;
 
@@ -782,7 +1515,9 @@ static HRESULT WINAPI user_CacheEndpoints( IUser *iface )
     impl->policies = policies;
     impl->policiesLen = policiesLen;
     endpoints = NULL;
+    endpointsLen = 0;
     policies = NULL;
+    policiesLen = 0;
 
 cleanup:
     free( buffer );
@@ -1117,7 +1852,10 @@ static HRESULT WINAPI XUserAddProvider( XAsyncOp op, const XAsyncProviderData *d
                 }
             }
 #endif
-            if (context->options & XUserAddOptions_AddDefaultUserSilently)
+            /* OrionBE: Minecraft often uses AddDefaultUserAllowingUI; if Xodus MSA fails
+             * (or socket missing), still try HKLM\Software\Wine\WineGDK RefreshToken. */
+            if (context->options & XUserAddOptions_AddDefaultUserSilently ||
+                context->options & XUserAddOptions_AddDefaultUserAllowingUI)
                 hr = LoadDefaultUser( &context->user );
             else hr = E_ABORT;
 
@@ -1515,21 +2253,11 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
             relyingParty = user_GetRelyingParty( context->user, &uc );
             AcquireSRWLockExclusive( &context->user->xstsLock );
             xstsLocked = TRUE;
-            refresh = !!(context->options & XUserGetTokenAndSignatureOptions_ForceRefresh);
-            now = time( NULL );
-            if (context->user->oauth_expiry && now != -1 && now >= context->user->oauth_expiry) refresh = TRUE;
-            if (refresh)
-            {
-                if (context->user->refreshToken &&
-                        FAILED(hr = IUser_RefreshOAuthToken( &context->user->IUser_iface ))) goto cleanup;
-                if (FAILED(hr = IUser_RequestUserToken( &context->user->IUser_iface ))) goto cleanup;
-            }
-            if (refresh || !context->user->xstsToken || !context->user->xstsRelyingParty ||
-                    strcmp( context->user->xstsRelyingParty, relyingParty ))
-            {
-                if (FAILED(hr = user_request_xsts_token( context->user, relyingParty ))) goto cleanup;
-            }
+            if (FAILED(hr = user_ensure_xsts_for_url( context->user, &uc, relyingParty ))) goto cleanup;
             TRACE( "Using XSTS relying party %s for %s.\n", debugstr_a( relyingParty ), debugstr_a( context->url ) );
+            /* Heartbeat only on titles/current — token is already title-claim XSTS. */
+            if (context->url && strstr( context->url, "titles/current" ))
+                user_publish_presence_online( context->user );
             wUserHash = WindowsGetStringRawBuffer( context->user->userHash, &wUserHashLen );
             wToken = WindowsGetStringRawBuffer( context->user->xstsToken, &wTokenLen );
             if (!(userHashLen = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wUserHash, wUserHashLen, NULL, 0, NULL, NULL ))) goto error;
@@ -1587,8 +2315,43 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
             memcpy( ptr, context->headers, context->headersSize );
             ptr += context->headersSize;
 
+            /*
+             * Bedrock signs+posts activity JSON without title id → Xbox Forbidden.
+             * Rewrite the signed copy to {"id":"1739947436","state":"active"} padded to
+             * the original size; winhttp must send the same bytes (see request.c).
+             */
+            if (context->url && strstr( context->url, "/titles/current" ) &&
+                context->bodyBuffer && context->bodySize >= 36 && context->bodySize < 512 &&
+                !(context->bodySize >= 6 && !memcmp( context->bodyBuffer, "{\"id\":", 6 )))
+            {
+                char rewrite[512];
+                DWORD need = (DWORD)snprintf( rewrite, sizeof(rewrite),
+                                             "{\"id\":\"1739947436\",\"state\":\"active\"}" );
+                if (need && need < context->bodySize)
+                {
+                    memset( rewrite + need, ' ', context->bodySize - need );
+                    memcpy( context->bodyBuffer, rewrite, context->bodySize );
+                    TRACE( "rewrote titles/current signed body to %zu bytes.\n", context->bodySize );
+                }
+            }
+
             /* body */
             memcpy( ptr, context->bodyBuffer, min( context->bodySize, 0x2000 ) );
+
+            if (context->url && strstr( context->url, "userpresence" ) && context->bodySize)
+            {
+                FILE *df = fopen( "/home/perfect/OrionBE/logs/presence-dump.txt", "a" );
+                if (df)
+                {
+                    fprintf( df, "URL %s bodySize %zu\n", context->url, (size_t)context->bodySize );
+                    fwrite( context->bodyBuffer, 1, context->bodySize, df );
+                    fputc( '\n', df );
+                    fclose( df );
+                }
+            }
+
+            TRACE( "buf: %s\n", debugstr_an( (char *)buf, bufLen ) );
+            TRACE( "rawSignature: %s\n", debugstr_an( (char *)rawSignature, 76 ) );
 
             if (FAILED(hr = IUser_SignData( &context->user->IUser_iface, bufLen, (UCHAR *)buf, 64, rawSignature + 12 ))) goto cleanup;
 

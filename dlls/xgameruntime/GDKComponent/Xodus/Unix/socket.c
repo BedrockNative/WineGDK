@@ -127,25 +127,33 @@ static NTSTATUS conn_sock( void *args )
 {
     struct sockaddr_un addr;
     LPCSTR socket_suffix = args;
-    char *socket_path;
+    char *socket_path = NULL;
     size_t len;
     int error;
+    const char *override;
 
+    /* OrionBE / pressure-vessel: host $XDG_RUNTIME_DIR is filtered; prefer an explicit
+     * path under $HOME (visible inside steamrt without STEAM_COMPAT_MOUNTS). */
+    override = getenv( "XODUS_SOCKET" );
+    if (override && override[0])
+    {
+        len = strlen( override ) + 1;
+        if (!(socket_path = malloc( len ))) return STATUS_NO_MEMORY;
+        memcpy( socket_path, override, len );
+    }
+    else
+    {
 #ifdef __linux__
-    const char *runtime = getenv( "XDG_RUNTIME_DIR" );
-    if (!runtime || !*runtime) return STATUS_OBJECT_PATH_NOT_FOUND;
-#else
-    const char *runtime = "/tmp";
+        const char *runtime = getenv( "XDG_RUNTIME_DIR" );
+        if (!runtime) return E_NOT_VALID_STATE;
+#elif defined(__APPLE__)
+        const char *runtime = "/tmp";
 #endif
 
-    if (!socket_suffix) return STATUS_INVALID_PARAMETER;
-    len = strlen( runtime ) + strlen( socket_suffix ) + 2;
-    if (len > sizeof(addr.sun_path)) return STATUS_NAME_TOO_LONG;
-    if (sockfd >= 0) return STATUS_SUCCESS;
-    if (!(socket_path = malloc( len ))) return STATUS_NO_MEMORY;
-    memcpy( socket_path, runtime, strlen( runtime ) );
-    socket_path[strlen( runtime )] = '/';
-    memcpy( socket_path + strlen( runtime ) + 1, socket_suffix, strlen( socket_suffix ) + 1 );
+        len = strlen( runtime ) + strlen( socket_suffix ) + 2;
+        if (!(socket_path = malloc( len ))) return STATUS_NO_MEMORY;
+        snprintf( socket_path, len, "%s/%s", runtime, socket_suffix );
+    }
 
     sockfd = socket( AF_UNIX, SOCK_STREAM, 0 );
     if (sockfd < 0)

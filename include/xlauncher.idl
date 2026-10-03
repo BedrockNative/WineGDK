@@ -40,7 +40,7 @@ interface IXLauncherImpl : IUnknown
 ]
 coclass XLauncherImpl
 {
-    [default] interface IXLauncherImpl;
+    [default] interface IXLauncher;
 }
 
 cpp_quote("#endif")

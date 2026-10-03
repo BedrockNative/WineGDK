@@ -1168,6 +1168,7 @@ enable_dx8vb
 enable_dxcore
 enable_dxdiagn
 enable_dxgi
+enable_dxvk
 enable_dxtrans
 enable_dxva2
 enable_esent
@@ -1182,6 +1183,7 @@ enable_fontsub
 enable_fusion
 enable_fwpuclnt
 enable_gameinput
+enable_gameinput_redist
 enable_gameux
 enable_gamingtcui
 enable_gdi32
@@ -1265,6 +1267,7 @@ enable_mfplay
 enable_mfreadwrite
 enable_mfsrcsnk
 enable_mgmtapi
+enable_microsoft_windows_storage_pickers
 enable_midimap
 enable_mlang
 enable_mmcndmgr
@@ -1515,6 +1518,7 @@ enable_version
 enable_vga
 enable_vidreszr
 enable_virtdisk
+enable_vkd3d_proton
 enable_vssapi
 enable_vulkan_1
 enable_w32skrnl
@@ -1662,6 +1666,7 @@ enable_xaudio2_7
 enable_xaudio2_8
 enable_xaudio2_9
 enable_xgameruntime
+enable_xgameruntime_threading
 enable_xinput1_1
 enable_xinput1_2
 enable_xinput1_3
@@ -22455,6 +22460,7 @@ wine_fn_config_makefile dlls/dxdiagn enable_dxdiagn
 wine_fn_config_makefile dlls/dxdiagn/tests enable_tests
 wine_fn_config_makefile dlls/dxgi enable_dxgi
 wine_fn_config_makefile dlls/dxgi/tests enable_tests
+wine_fn_config_makefile dlls/dxvk enable_dxvk
 wine_fn_config_makefile dlls/dxtrans enable_dxtrans
 wine_fn_config_makefile dlls/dxva2 enable_dxva2
 wine_fn_config_makefile dlls/dxva2/tests enable_tests
@@ -22474,6 +22480,7 @@ wine_fn_config_makefile dlls/fusion enable_fusion
 wine_fn_config_makefile dlls/fusion/tests enable_tests
 wine_fn_config_makefile dlls/fwpuclnt enable_fwpuclnt
 wine_fn_config_makefile dlls/gameinput enable_gameinput
+wine_fn_config_makefile dlls/gameinput.redist enable_gameinput_redist
 wine_fn_config_makefile dlls/gameux enable_gameux
 wine_fn_config_makefile dlls/gameux/tests enable_tests
 wine_fn_config_makefile dlls/gamingtcui enable_gamingtcui
@@ -22602,6 +22609,7 @@ wine_fn_config_makefile dlls/mfreadwrite/tests enable_tests
 wine_fn_config_makefile dlls/mfsrcsnk enable_mfsrcsnk
 wine_fn_config_makefile dlls/mfsrcsnk/tests enable_tests
 wine_fn_config_makefile dlls/mgmtapi enable_mgmtapi
+wine_fn_config_makefile dlls/microsoft.windows.storage.pickers enable_microsoft_windows_storage_pickers
 wine_fn_config_makefile dlls/midimap enable_midimap
 wine_fn_config_makefile dlls/mlang enable_mlang
 wine_fn_config_makefile dlls/mlang/tests enable_tests
@@ -23000,6 +23008,7 @@ wine_fn_config_makefile dlls/version/tests enable_tests
 wine_fn_config_makefile dlls/vga enable_vga
 wine_fn_config_makefile dlls/vidreszr enable_vidreszr
 wine_fn_config_makefile dlls/virtdisk enable_virtdisk
+wine_fn_config_makefile dlls/vkd3d-proton enable_vkd3d_proton
 wine_fn_config_makefile dlls/virtdisk/tests enable_tests
 wine_fn_config_makefile dlls/vmm.vxd enable_win16
 wine_fn_config_makefile dlls/vnbt.vxd enable_win16
@@ -23228,6 +23237,7 @@ wine_fn_config_makefile dlls/xaudio2_8/tests enable_tests
 wine_fn_config_makefile dlls/xaudio2_9 enable_xaudio2_9
 wine_fn_config_makefile dlls/xgameruntime enable_xgameruntime
 wine_fn_config_makefile dlls/xgameruntime/tests enable_tests
+wine_fn_config_makefile dlls/xgameruntime.threading enable_xgameruntime_threading
 wine_fn_config_makefile dlls/xinput1_1 enable_xinput1_1
 wine_fn_config_makefile dlls/xinput1_2 enable_xinput1_2
 wine_fn_config_makefile dlls/xinput1_3 enable_xinput1_3

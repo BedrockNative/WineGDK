@@ -48,6 +48,35 @@ Then either install Wine:
 make install
 ```
 
+The native packages in `dlls/xgameruntime.threading`, `dlls/dxvk`, and
+`dlls/vkd3d-proton` are installed by `make install` into
+`lib/wine/native/<architecture>-windows`. New prefixes receive the x64 DLLs
+in `system32` and the i386 graphics DLLs in `syswow64`. XThreading is x64 only.
+DXVK supplies Direct3D 8–11 and DXGI; VKD3D-Proton supplies Direct3D 12 and
+includes the Minecraft patch from the local patched build. Each package has
+a checksum manifest; the graphics packages also retain their upstream README
+and license files, installed under `share/wine/native`.
+
+Prefix setup adds `native,builtin` graphics overrides only when no override
+already exists. `wineboot -u` installs missing companions and replaces Wine's
+builtin placeholders, preserving existing native DLLs and user overrides.
+To build both architectures, use `./configure --enable-archs=x86_64,i386`
+with the desired `--prefix` before running `make -j"$(nproc)"`.
+
+Prefix setup enables automatic mouse capture in fullscreen windows
+(`Software\Wine\X11 Driver\GrabFullscreen=Y`), preserving an existing setting
+on updates. Minecraft's `Bedrock` window also receives a borderless style when
+entering fullscreen, removing the leftover `WS_DLGFRAME` edge while retaining
+normal decorations when returning to windowed mode.
+
+`dlls/gameinput.redist` supplies the extracted GameInput runtime and
+`loader/gameinput.inf.in` reproduces its file, device database, COM and service
+registration on x64 prefix creation/update. The MSI is neither bundled nor run.
+Wine's builtin GameInput stays the default: the native redist service currently
+requires the unimplemented `ntdll.NtQueryWnfStateData`, so setup leaves it at
+demand start and does not start it automatically. See the package README for
+the remaining native-service compatibility limitation.
+
 Or run Wine directly from the build directory:
 
 ```

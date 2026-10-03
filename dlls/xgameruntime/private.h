@@ -56,6 +56,7 @@
 #include <xuser.h>
 #include <xasync.h>
 #include <xasyncprovider.h>
+#include <xlauncher.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -104,8 +105,8 @@ extern "C" {
 
 #define POLL_BUFFER_SIZE 0x10008 /* UINT16 payload plus IPC header */
 #define XODUS_SOCKET_SUFFIX "xodus.sock"
-#define IPC_REQUEST_TIMEOUT_MS 5000
-#ifndef XODUS_INTEROP
+/* OrionBE: 5 s was shorter than a slow DNS lookup (login.live.com) and made the game crash; allow up to 60 s. */
+#define IPC_REQUEST_TIMEOUT_MS 60000
 #define XODUS_INTEROP 1
 #endif
 
@@ -116,24 +117,25 @@ extern char *msaAppId;
 extern UINT32 titleId;
 extern BOOLEAN fullTrust;
 
-extern IXThreadingImpl *x_threading_impl;
-extern IXGameRuntimeFeatureImpl *x_game_runtime_feature;
-extern IXSystemImpl *x_system;
-extern IXSystemAnalyticsImpl *x_system_analytics;
-extern IXNetworkingImpl *x_networking;
-extern IXGameImpl *x_game;
-extern IXLauncherImpl *x_launcher;
-extern IXUserImpl6 *x_user;
-extern IXUserDeviceImpl *x_user_device;
+/* C linkage so main.c and C++ translation units share the same symbols. */
+EXTERN_C IXThreadingImpl *x_threading_impl;
+EXTERN_C IXGameRuntimeFeatureImpl *x_game_runtime_feature;
+EXTERN_C IXSystemImpl *x_system;
+EXTERN_C IXSystemAnalyticsImpl *x_system_analytics;
+EXTERN_C IXNetworkingImpl *x_networking;
+EXTERN_C IXGameImpl *x_game;
+EXTERN_C IXUserImpl6 *x_user;
+EXTERN_C IXUserDeviceImpl *x_user_device;
+EXTERN_C IXLauncherImpl *x_launcher;
 
 #ifdef __cplusplus
-extern ABI::Xodus::IIPCLayer *xodus_ipclayer;
-extern ABI::Xodus::IXodusService *xodus_service;
-extern ABI::Xodus::IXodusXMLBuilder *xodus_xml_builder;
+EXTERN_C ABI::Xodus::IIPCLayer *xodus_ipclayer;
+EXTERN_C ABI::Xodus::IXodusService *xodus_service;
+EXTERN_C ABI::Xodus::IXodusXMLBuilder *xodus_xml_builder;
 #else
-extern IIPCLayer *xodus_ipclayer;
-extern IXodusService *xodus_service;
-extern IXodusXMLBuilder *xodus_xml_builder;
+EXTERN_C IIPCLayer *xodus_ipclayer;
+EXTERN_C IXodusService *xodus_service;
+EXTERN_C IXodusXMLBuilder *xodus_xml_builder;
 #endif
 
 EXTERN_C HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, void **out );
@@ -158,7 +160,7 @@ enum unix_funcs
     send_frame
 };
 
-extern unixlib_handle_t unixhandle;
+EXTERN_C unixlib_handle_t unixhandle;
 
 
 typedef HRESULT (WINAPI *async_operation_callback)( IUnknown *invoker, PVOID param, PROPVARIANT *result );
