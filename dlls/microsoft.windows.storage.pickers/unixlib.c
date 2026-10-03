@@ -1,27 +1,7 @@
 /*
- * Microsoft.Windows.Storage.Pickers - Unix side (file chooser broker client)
+ * Microsoft.Windows.Storage.Pickers - XDG Desktop Portal client
  *
  * Copyright 2026 OrionBE contributors
- *
- * The game runs inside the Steam Linux Runtime (pressure-vessel), which does not see the
- * host's dialog programs (kdialog, zenity, ...) nor necessarily the user's desktop portal.
- * So the dialog is not shown from here: the OrionBE launcher, running on the host, listens
- * on a unix domain socket (inside a directory bind-mounted into the container) and opens
- * the user's native Linux file dialog on the real filesystem. We connect, send one JSON
- * line and read one JSON line back:
- *
- *   -> {"v":1,"op":"open|openMany|save|folder","title":"..","acceptLabel":"..",
- *       "filters":[{"name":"..","patterns":["*.png",..]}],"startLocation":"PicturesLibrary",
- *       "startDir":"/unix/dir","suggestedName":"..","parentWindow":"x11:0x..."}
- *   <- {"ok":true,"paths":["/home/user/skin.png"]}   (ok:false / empty paths = cancelled)
- *
- * Socket: $ORIONBE_PICKER_SOCKET, else $HOME/OrionBE/cache/xodus-run/picker.sock.
- * When the broker is not reachable the pick completes as cancelled (with a warning), so the
- * game never crashes.
- *
- * Environment overrides (for testing / troubleshooting):
- *   ORIONBE_PICKER_TEST_RESULT  skip the broker: "cancel" (or empty) = user cancelled,
- *                               otherwise '|'-separated Unix paths returned as picked.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -48,193 +28,253 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <errno.h>
-#include <poll.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/un.h>
+#include <dlfcn.h>
+#include <pthread.h>
+#ifdef SONAME_LIBDBUS_1
+# include <dbus/dbus.h>
+#endif
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "windef.h"
 #include "winternl.h"
-
 #include "wine/debug.h"
-
 #include "unixlib.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(pickers);
 
-#define MAX_RESPONSE (4 * 1024 * 1024)
+#ifdef SONAME_LIBDBUS_1
 
-/* growable string buffer */
-struct strbuf
-{
-    char *data;
-    size_t len;
-    size_t size;
-    BOOL failed;
-};
+#define PORTAL_BUS "org.freedesktop.portal.Desktop"
+#define PORTAL_PATH "/org/freedesktop/portal/desktop"
+#define PORTAL_CHOOSER "org.freedesktop.portal.FileChooser"
+#define PORTAL_REQUEST "org.freedesktop.portal.Request"
 
-static void strbuf_append_len( struct strbuf *buf, const char *str, size_t len )
+#define DBUS_FUNCS \
+    DO_FUNC(dbus_bus_add_match); \
+    DO_FUNC(dbus_bus_get_private); \
+    DO_FUNC(dbus_connection_close); \
+    DO_FUNC(dbus_connection_pop_message); \
+    DO_FUNC(dbus_connection_read_write); \
+    DO_FUNC(dbus_connection_send_with_reply_and_block); \
+    DO_FUNC(dbus_connection_set_exit_on_disconnect); \
+    DO_FUNC(dbus_connection_unref); \
+    DO_FUNC(dbus_error_free); \
+    DO_FUNC(dbus_error_is_set); \
+    DO_FUNC(dbus_message_get_args); \
+    DO_FUNC(dbus_message_get_path); \
+    DO_FUNC(dbus_message_get_sender); \
+    DO_FUNC(dbus_message_has_signature); \
+    DO_FUNC(dbus_message_is_signal); \
+    DO_FUNC(dbus_message_iter_append_basic); \
+    DO_FUNC(dbus_message_iter_append_fixed_array); \
+    DO_FUNC(dbus_message_iter_close_container); \
+    DO_FUNC(dbus_message_iter_get_arg_type); \
+    DO_FUNC(dbus_message_iter_get_basic); \
+    DO_FUNC(dbus_message_iter_init); \
+    DO_FUNC(dbus_message_iter_init_append); \
+    DO_FUNC(dbus_message_iter_next); \
+    DO_FUNC(dbus_message_iter_open_container); \
+    DO_FUNC(dbus_message_iter_recurse); \
+    DO_FUNC(dbus_message_new_method_call); \
+    DO_FUNC(dbus_message_unref); \
+    DO_FUNC(dbus_threads_init_default)
+
+#define DO_FUNC(f) static typeof(f) *p_##f
+DBUS_FUNCS;
+#undef DO_FUNC
+
+static pthread_once_t dbus_once = PTHREAD_ONCE_INIT;
+static BOOL dbus_available;
+
+static void load_dbus(void)
 {
-    if (buf->failed) return;
-    if (buf->len + len + 1 > buf->size)
+    void *handle;
+
+    if (!(handle = dlopen( SONAME_LIBDBUS_1, RTLD_NOW ))) return;
+#define DO_FUNC(f) if (!(p_##f = dlsym( handle, #f ))) goto failed
+    DBUS_FUNCS;
+#undef DO_FUNC
+    if (!p_dbus_threads_init_default()) goto failed;
+    dbus_available = TRUE;
+    return;
+failed:
+    dlclose( handle );
+}
+
+static BOOL append_option( DBusMessageIter *options, const char *key, int type,
+                           const char *signature, const void *value )
+{
+    DBusMessageIter entry, variant;
+
+    return p_dbus_message_iter_open_container( options, DBUS_TYPE_DICT_ENTRY, NULL, &entry ) &&
+           p_dbus_message_iter_append_basic( &entry, DBUS_TYPE_STRING, &key ) &&
+           p_dbus_message_iter_open_container( &entry, DBUS_TYPE_VARIANT, signature, &variant ) &&
+           p_dbus_message_iter_append_basic( &variant, type, value ) &&
+           p_dbus_message_iter_close_container( &entry, &variant ) &&
+           p_dbus_message_iter_close_container( options, &entry );
+}
+
+static BOOL append_string_option( DBusMessageIter *options, const char *key, const char *value )
+{
+    return !value || !*value || append_option( options, key, DBUS_TYPE_STRING, "s", &value );
+}
+
+static BOOL append_folder( DBusMessageIter *options, const char *folder )
+{
+    const char *key = "current_folder";
+    DBusMessageIter entry, variant, array;
+
+    if (!folder || !*folder) return TRUE;
+    return p_dbus_message_iter_open_container( options, DBUS_TYPE_DICT_ENTRY, NULL, &entry ) &&
+           p_dbus_message_iter_append_basic( &entry, DBUS_TYPE_STRING, &key ) &&
+           p_dbus_message_iter_open_container( &entry, DBUS_TYPE_VARIANT, "ay", &variant ) &&
+           p_dbus_message_iter_open_container( &variant, DBUS_TYPE_ARRAY, "y", &array ) &&
+           p_dbus_message_iter_append_fixed_array( &array, DBUS_TYPE_BYTE, &folder, strlen(folder) + 1 ) &&
+           p_dbus_message_iter_close_container( &variant, &array ) &&
+           p_dbus_message_iter_close_container( &entry, &variant ) &&
+           p_dbus_message_iter_close_container( options, &entry );
+}
+
+/* "Label\tpattern;pattern\n" -> a(sa(us)), using glob (type 0) filters. */
+static BOOL append_filters( DBusMessageIter *options, const char *filters )
+{
+    DBusMessageIter entry, variant, array, filter, patterns, pattern;
+    const char *key = "filters", *line, *end, *tab, *p, *q;
+    dbus_uint32_t glob = 0;
+    char *label = NULL, *value = NULL;
+    BOOL ret = FALSE;
+
+    if (!filters || !*filters) return TRUE;
+    if (!p_dbus_message_iter_open_container( options, DBUS_TYPE_DICT_ENTRY, NULL, &entry ) ||
+        !p_dbus_message_iter_append_basic( &entry, DBUS_TYPE_STRING, &key ) ||
+        !p_dbus_message_iter_open_container( &entry, DBUS_TYPE_VARIANT, "a(sa(us))", &variant ) ||
+        !p_dbus_message_iter_open_container( &variant, DBUS_TYPE_ARRAY, "(sa(us))", &array )) goto done;
+
+    for (line = filters; *line; line = *end ? end + 1 : end)
     {
-        size_t size = buf->size ? buf->size * 2 : 256;
-        char *data;
-        while (size < buf->len + len + 1) size *= 2;
-        if (!(data = realloc( buf->data, size )))
-        {
-            buf->failed = TRUE;
-            return;
-        }
-        buf->data = data;
-        buf->size = size;
-    }
-    memcpy( buf->data + buf->len, str, len );
-    buf->len += len;
-    buf->data[buf->len] = 0;
-}
-
-static void strbuf_append( struct strbuf *buf, const char *str )
-{
-    strbuf_append_len( buf, str, strlen( str ) );
-}
-
-/* appends a JSON string literal (UTF-8 passes through, control chars are escaped) */
-static void append_json_string( struct strbuf *buf, const char *str )
-{
-    const unsigned char *p;
-    char tmp[8];
-
-    strbuf_append( buf, "\"" );
-    for (p = (const unsigned char *)str; *p; p++)
-    {
-        switch (*p)
-        {
-        case '"':  strbuf_append( buf, "\\\"" ); break;
-        case '\\': strbuf_append( buf, "\\\\" ); break;
-        case '\n': strbuf_append( buf, "\\n" ); break;
-        case '\r': strbuf_append( buf, "\\r" ); break;
-        case '\t': strbuf_append( buf, "\\t" ); break;
-        default:
-            if (*p < 0x20)
-            {
-                snprintf( tmp, sizeof(tmp), "\\u%04x", *p );
-                strbuf_append( buf, tmp );
-            }
-            else strbuf_append_len( buf, (const char *)p, 1 );
-        }
-    }
-    strbuf_append( buf, "\"" );
-}
-
-static void append_json_member( struct strbuf *buf, const char *name, const char *value )
-{
-    if (!value || !*value) return;
-    strbuf_append( buf, ",\"" );
-    strbuf_append( buf, name );
-    strbuf_append( buf, "\":" );
-    append_json_string( buf, value );
-}
-
-static const char *location_name( UINT32 location )
-{
-    static const char *names[] =
-    {
-        "DocumentsLibrary", "ComputerFolder", "Desktop", "Downloads", NULL,
-        "MusicLibrary", "PicturesLibrary", "VideosLibrary", "Objects3D", "Unspecified",
-    };
-    return location < ARRAY_SIZE(names) ? names[location] : NULL;
-}
-
-static const char *mode_name( UINT32 mode )
-{
-    switch (mode)
-    {
-    case UNIX_PICKER_OPEN_MULTIPLE: return "openMany";
-    case UNIX_PICKER_SAVE: return "save";
-    case UNIX_PICKER_FOLDER: return "folder";
-    default: return "open";
-    }
-}
-
-/* filters: lines "Label\tpattern;pattern\n" -> [{"name":..,"patterns":[..]}] */
-static void append_filters( struct strbuf *buf, const char *filters )
-{
-    const char *line = filters, *end, *tab, *p, *q;
-    BOOL first = TRUE;
-    char *tmp;
-
-    if (!filters || !*filters) return;
-    strbuf_append( buf, ",\"filters\":[" );
-    for (; line && *line; line = *end ? end + 1 : end)
-    {
-        BOOL first_pattern = TRUE;
-
         if (!(end = strchr( line, '\n' ))) end = line + strlen( line );
         if (end == line) continue;
         if (!(tab = memchr( line, '\t', end - line ))) tab = line;
-
-        strbuf_append( buf, first ? "{\"name\":" : ",{\"name\":" );
-        first = FALSE;
-        if (!(tmp = strndup( line, tab - line ))) { buf->failed = TRUE; return; }
-        append_json_string( buf, tmp );
-        free( tmp );
-        strbuf_append( buf, ",\"patterns\":[" );
-        for (p = tab == line ? line : tab + 1; p < end; p = q + 1)
+        if (!(label = strndup( line, tab - line ))) goto done;
+        if (!p_dbus_message_iter_open_container( &array, DBUS_TYPE_STRUCT, NULL, &filter ) ||
+            !p_dbus_message_iter_append_basic( &filter, DBUS_TYPE_STRING, &label ) ||
+            !p_dbus_message_iter_open_container( &filter, DBUS_TYPE_ARRAY, "(us)", &patterns )) goto done;
+        free( label );
+        label = NULL;
+        for (p = tab == line ? line : tab + 1; p < end; p = q < end ? q + 1 : end)
         {
             while (p < end && (*p == ';' || *p == ' ')) p++;
-            if (p >= end) break;
+            if (p == end) break;
             for (q = p; q < end && *q != ';'; q++) ;
-            if (!(tmp = strndup( p, q - p ))) { buf->failed = TRUE; return; }
-            if (!first_pattern) strbuf_append( buf, "," );
-            first_pattern = FALSE;
-            append_json_string( buf, tmp );
-            free( tmp );
+            if (!(value = strndup( p, q - p ))) goto done;
+            if (!p_dbus_message_iter_open_container( &patterns, DBUS_TYPE_STRUCT, NULL, &pattern ) ||
+                !p_dbus_message_iter_append_basic( &pattern, DBUS_TYPE_UINT32, &glob ) ||
+                !p_dbus_message_iter_append_basic( &pattern, DBUS_TYPE_STRING, &value ) ||
+                !p_dbus_message_iter_close_container( &patterns, &pattern )) goto done;
+            free( value );
+            value = NULL;
         }
-        strbuf_append( buf, "]}" );
+        if (!p_dbus_message_iter_close_container( &filter, &patterns ) ||
+            !p_dbus_message_iter_close_container( &array, &filter )) goto done;
     }
-    strbuf_append( buf, "]" );
+    ret = p_dbus_message_iter_close_container( &variant, &array ) &&
+          p_dbus_message_iter_close_container( &entry, &variant ) &&
+          p_dbus_message_iter_close_container( options, &entry );
+done:
+    free( label );
+    free( value );
+    return ret;
 }
 
-static char *build_request( struct picker_show_params *params )
+/* Read the desktop's user-dirs.dirs without executing shell code. */
+static char *get_start_folder( UINT32 location )
 {
-    struct strbuf buf = {0};
-    char tmp[64];
+    static const char *keys[] = { "DOCUMENTS", NULL, "DESKTOP", "DOWNLOAD", NULL,
+                                 "MUSIC", "PICTURES", "VIDEOS" };
+    static const char *defaults[] = { "Documents", NULL, "Desktop", "Downloads", NULL,
+                                     "Music", "Pictures", "Videos" };
+    const char *home = getenv( "HOME" ), *config = getenv( "XDG_CONFIG_HOME" );
+    char filename[4096], key[64], line[4096], *p, *q, *folder = NULL;
+    FILE *file;
 
-    strbuf_append( &buf, "{\"v\":1,\"op\":" );
-    append_json_string( &buf, mode_name( params->mode ) );
-    append_json_member( &buf, "title", params->title );
-    append_json_member( &buf, "acceptLabel", params->accept_label );
-    append_filters( &buf, params->filters );
-    append_json_member( &buf, "startLocation", location_name( params->start_location ) );
-    append_json_member( &buf, "startDir", params->current_folder );
-    append_json_member( &buf, "suggestedName", params->current_name );
-    if (params->x11_window)
+    if (location == 1) return strdup( "/" ); /* ComputerFolder */
+    if (!home || !*home || location >= ARRAY_SIZE(keys) || !keys[location]) return NULL;
+    if (config && config[0] == '/') snprintf( filename, sizeof(filename), "%s/user-dirs.dirs", config );
+    else snprintf( filename, sizeof(filename), "%s/.config/user-dirs.dirs", home );
+    snprintf( key, sizeof(key), "XDG_%s_DIR=", keys[location] );
+    if ((file = fopen( filename, "r" )))
     {
-        snprintf( tmp, sizeof(tmp), "x11:0x%llx", (unsigned long long)params->x11_window );
-        append_json_member( &buf, "parentWindow", tmp );
+        while (fgets( line, sizeof(line), file ))
+        {
+            p = line;
+            while (*p == ' ' || *p == '\t') p++;
+            if (strncmp( p, key, strlen(key) )) continue;
+            p += strlen(key);
+            if (*p++ != '"') continue;
+            if (!(q = strrchr( p, '"' ))) continue;
+            *q = 0;
+            if (!strncmp( p, "$HOME/", 6 ))
+            {
+                if ((folder = malloc( strlen(home) + strlen(p + 5) + 1 )))
+                    sprintf( folder, "%s%s", home, p + 5 );
+            }
+            else if (!strcmp( p, "$HOME" )) folder = strdup( home );
+            else if (*p == '/') folder = strdup( p );
+            if (folder)
+            {
+                /* Unescape quoted backslashes, quotes and dollar signs. */
+                for (p = q = folder; *p; p++, q++)
+                {
+                    if (*p == '\\' && (p[1] == '\\' || p[1] == '"' || p[1] == '$' || p[1] == '`')) p++;
+                    *q = *p;
+                }
+                *q = 0;
+                break;
+            }
+        }
+        fclose( file );
     }
-    strbuf_append( &buf, "}\n" );
-    if (buf.failed)
-    {
-        free( buf.data );
-        return NULL;
-    }
-    return buf.data;
+    if (!folder && (folder = malloc( strlen(home) + strlen(defaults[location]) + 2 )))
+        sprintf( folder, "%s/%s", home, defaults[location] );
+    return folder;
 }
 
-/*
- * minimal JSON reader for the response object
- */
-
-static const char *skip_ws( const char *p )
+static DBusMessage *build_request( const struct picker_show_params *params )
 {
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
-    return p;
+    const char *method = params->mode == UNIX_PICKER_SAVE ? "SaveFile" : "OpenFile";
+    const char *title = params->title ? params->title : "";
+    const char *parent;
+    char window[64] = "", *folder = NULL;
+    DBusMessage *message;
+    DBusMessageIter args, options;
+    dbus_bool_t multiple = params->mode == UNIX_PICKER_OPEN_MULTIPLE;
+    dbus_bool_t directory = params->mode == UNIX_PICKER_FOLDER;
+    dbus_bool_t modal = TRUE;
+    BOOL ret;
+
+    if (!(message = p_dbus_message_new_method_call( PORTAL_BUS, PORTAL_PATH, PORTAL_CHOOSER, method ))) return NULL;
+    if (params->x11_window) snprintf( window, sizeof(window), "x11:%llx", (unsigned long long)params->x11_window );
+    parent = window;
+    if (!params->current_folder || !*params->current_folder) folder = get_start_folder( params->start_location );
+    p_dbus_message_iter_init_append( message, &args );
+    ret = p_dbus_message_iter_append_basic( &args, DBUS_TYPE_STRING, &parent ) &&
+          p_dbus_message_iter_append_basic( &args, DBUS_TYPE_STRING, &title ) &&
+          p_dbus_message_iter_open_container( &args, DBUS_TYPE_ARRAY, "{sv}", &options ) &&
+          append_option( &options, "modal", DBUS_TYPE_BOOLEAN, "b", &modal ) &&
+          append_string_option( &options, "accept_label", params->accept_label ) &&
+          append_filters( &options, params->filters ) &&
+          append_folder( &options, folder ? folder : params->current_folder );
+    if (ret && params->mode == UNIX_PICKER_SAVE)
+        ret = append_string_option( &options, "current_name", params->current_name );
+    else if (ret)
+        ret = append_option( &options, "multiple", DBUS_TYPE_BOOLEAN, "b", &multiple ) &&
+              append_option( &options, "directory", DBUS_TYPE_BOOLEAN, "b", &directory );
+    if (ret) ret = p_dbus_message_iter_close_container( &args, &options );
+    free( folder );
+    if (ret) return message;
+    p_dbus_message_unref( message );
+    return NULL;
 }
 
 static int hex_value( char c )
@@ -245,356 +285,186 @@ static int hex_value( char c )
     return -1;
 }
 
-static void append_utf8( struct strbuf *out, unsigned int cp )
+/* Portal URIs are local file:// URIs. Preserve UTF-8 and decode percent escapes once. */
+static NTSTATUS append_uri( struct picker_show_params *params, const char *uri )
 {
-    char tmp[4];
-    if (cp < 0x80) { tmp[0] = cp; strbuf_append_len( out, tmp, 1 ); }
-    else if (cp < 0x800)
-    {
-        tmp[0] = 0xc0 | (cp >> 6); tmp[1] = 0x80 | (cp & 0x3f);
-        strbuf_append_len( out, tmp, 2 );
-    }
-    else if (cp < 0x10000)
-    {
-        tmp[0] = 0xe0 | (cp >> 12); tmp[1] = 0x80 | ((cp >> 6) & 0x3f); tmp[2] = 0x80 | (cp & 0x3f);
-        strbuf_append_len( out, tmp, 3 );
-    }
-    else
-    {
-        tmp[0] = 0xf0 | (cp >> 18); tmp[1] = 0x80 | ((cp >> 12) & 0x3f);
-        tmp[2] = 0x80 | ((cp >> 6) & 0x3f); tmp[3] = 0x80 | (cp & 0x3f);
-        strbuf_append_len( out, tmp, 4 );
-    }
-}
+    const char *p;
+    char *path, *q;
+    size_t len;
+    int hi, lo;
 
-static BOOL read_hex4( const char *p, unsigned int *value )
-{
-    int i, h;
-    *value = 0;
-    for (i = 0; i < 4; i++)
+    if (!strncmp( uri, "file:///", 8 )) p = uri + 7;
+    else if (!strncmp( uri, "file://localhost/", 17 )) p = uri + 16;
+    else return STATUS_INVALID_PARAMETER;
+    if (!(path = malloc( strlen(p) + 1 ))) return STATUS_NO_MEMORY;
+    for (q = path; *p; p++, q++)
     {
-        if ((h = hex_value( p[i] )) < 0) return FALSE;
-        *value = (*value << 4) | h;
-    }
-    return TRUE;
-}
-
-/* parses a string literal at p (pointing at '"'); appends the decoded value to out when not NULL */
-static const char *parse_string( const char *p, struct strbuf *out )
-{
-    if (*p != '"') return NULL;
-    for (p++; *p && *p != '"'; p++)
-    {
-        if (*p != '\\')
+        if (*p == '%')
         {
-            if (out) strbuf_append_len( out, p, 1 );
-            continue;
+            if (!p[1] || !p[2] || (hi = hex_value(p[1])) < 0 || (lo = hex_value(p[2])) < 0 || !(hi || lo))
+                goto invalid;
+            *q = (hi << 4) | lo;
+            p += 2;
         }
-        switch (*++p)
-        {
-        case '"': case '\\': case '/': if (out) strbuf_append_len( out, p, 1 ); break;
-        case 'b': if (out) strbuf_append( out, "\b" ); break;
-        case 'f': if (out) strbuf_append( out, "\f" ); break;
-        case 'n': if (out) strbuf_append( out, "\n" ); break;
-        case 'r': if (out) strbuf_append( out, "\r" ); break;
-        case 't': if (out) strbuf_append( out, "\t" ); break;
-        case 'u':
-        {
-            unsigned int cp, lo;
-            if (!read_hex4( p + 1, &cp )) return NULL;
-            p += 4;
-            if (cp >= 0xd800 && cp < 0xdc00 && p[1] == '\\' && p[2] == 'u' && read_hex4( p + 3, &lo ) &&
-                lo >= 0xdc00 && lo < 0xe000)
-            {
-                cp = 0x10000 + ((cp - 0xd800) << 10) + (lo - 0xdc00);
-                p += 6;
-            }
-            if (out) append_utf8( out, cp );
-            break;
-        }
-        default: return NULL;
-        }
+        else if (*p == '?' || *p == '#') goto invalid;
+        else *q = *p;
     }
-    return *p == '"' ? p + 1 : NULL;
-}
-
-/* skips any JSON value */
-static const char *skip_value( const char *p, int depth )
-{
-    p = skip_ws( p );
-    if (depth > 32) return NULL;
-    if (*p == '"') return parse_string( p, NULL );
-    if (*p == '{' || *p == '[')
+    *q = 0;
+    len = q - path + 1;
+    if (len > params->result_size - params->result_len)
     {
-        char close = *p == '{' ? '}' : ']';
-        p = skip_ws( p + 1 );
-        if (*p == close) return p + 1;
-        for (;;)
-        {
-            if (close == '}')
-            {
-                if (!(p = parse_string( skip_ws( p ), NULL ))) return NULL;
-                p = skip_ws( p );
-                if (*p++ != ':') return NULL;
-            }
-            if (!(p = skip_value( p, depth + 1 ))) return NULL;
-            p = skip_ws( p );
-            if (*p == ',') { p++; continue; }
-            return *p == close ? p + 1 : NULL;
-        }
-    }
-    while (*p && !strchr( ",}] \t\r\n", *p )) p++;
-    return p;
-}
-
-/* {"ok":bool,"paths":[..],...} -> '\n'-separated paths in out (only when ok) */
-static BOOL parse_response( const char *json, struct strbuf *out, char *error, size_t error_size )
-{
-    const char *p = skip_ws( json );
-    struct strbuf paths = {0};
-    struct strbuf key = {0};
-    BOOL ok = FALSE, ret = FALSE;
-
-    *error = 0;
-    if (*p++ != '{') goto done;
-    p = skip_ws( p );
-    if (*p == '}') goto done;
-    for (;;)
-    {
-        key.len = 0;
-        if (!(p = parse_string( skip_ws( p ), &key ))) goto done;
-        p = skip_ws( p );
-        if (*p++ != ':') goto done;
-        p = skip_ws( p );
-
-        if (key.data && !strcmp( key.data, "ok" ))
-        {
-            ok = !strncmp( p, "true", 4 );
-            if (!(p = skip_value( p, 0 ))) goto done;
-        }
-        else if (key.data && !strcmp( key.data, "paths" ) && *p == '[')
-        {
-            p = skip_ws( p + 1 );
-            while (*p == '"')
-            {
-                size_t start;
-                if (paths.len) strbuf_append( &paths, "\n" );
-                start = paths.len;
-                if (!(p = parse_string( p, &paths ))) goto done;
-                if (paths.len == start && start) paths.data[--paths.len] = 0; /* drop empty entries */
-                p = skip_ws( p );
-                if (*p == ',') p = skip_ws( p + 1 );
-            }
-            if (*p++ != ']') goto done;
-        }
-        else if (key.data && !strcmp( key.data, "error" ) && *p == '"')
-        {
-            struct strbuf err = {0};
-            if (!(p = parse_string( p, &err ))) { free( err.data ); goto done; }
-            if (err.data) snprintf( error, error_size, "%s", err.data );
-            free( err.data );
-        }
-        else if (!(p = skip_value( p, 0 ))) goto done;
-
-        p = skip_ws( p );
-        if (*p == ',') { p++; continue; }
-        if (*p != '}') goto done;
-        break;
-    }
-    ret = !paths.failed;
-    if (ok && paths.len) strbuf_append_len( out, paths.data, paths.len );
-
-done:
-    free( paths.data );
-    free( key.data );
-    return ret;
-}
-
-static char *get_socket_path(void)
-{
-    const char *env = getenv( "ORIONBE_PICKER_SOCKET" ), *home;
-    char path[4096];
-
-    if (env && *env) return strdup( env );
-    if (!(home = getenv( "HOME" )) || !*home) return NULL;
-    snprintf( path, sizeof(path), "%s/OrionBE/cache/xodus-run/picker.sock", home );
-    WARN( "ORIONBE_PICKER_SOCKET not set, trying %s\n", debugstr_a(path) );
-    return strdup( path );
-}
-
-static BOOL write_all( int fd, const char *data, size_t len )
-{
-    while (len)
-    {
-        ssize_t ret = send( fd, data, len, MSG_NOSIGNAL );
-        if (ret < 0)
-        {
-            if (errno == EINTR) continue;
-            return FALSE;
-        }
-        data += ret;
-        len -= ret;
-    }
-    return TRUE;
-}
-
-/* reads one '\n'-terminated line (or up to EOF); blocks as long as the dialog is up */
-static BOOL read_line( int fd, struct strbuf *out )
-{
-    char buf[4096];
-
-    for (;;)
-    {
-        ssize_t ret = recv( fd, buf, sizeof(buf), 0 );
-        char *nl;
-        if (ret < 0)
-        {
-            if (errno == EINTR) continue;
-            return FALSE;
-        }
-        if (!ret) return out->len > 0;
-        if ((nl = memchr( buf, '\n', ret )))
-        {
-            strbuf_append_len( out, buf, nl - buf );
-            return !out->failed;
-        }
-        strbuf_append_len( out, buf, ret );
-        if (out->failed || out->len > MAX_RESPONSE) return FALSE;
-    }
-}
-
-/* returns STATUS_SUCCESS (out holds the paths, empty = cancelled) or an error status */
-static NTSTATUS ask_broker( struct picker_show_params *params, struct strbuf *out )
-{
-    struct sockaddr_un addr = { .sun_family = AF_UNIX };
-    struct strbuf response = {0};
-    char *path, *request, error[256];
-    NTSTATUS status = STATUS_PIPE_BROKEN;
-    int fd;
-
-    if (!(path = get_socket_path()))
-    {
-        WARN( "no file picker broker socket (ORIONBE_PICKER_SOCKET / HOME unset); treating as cancelled\n" );
-        return STATUS_OBJECT_PATH_NOT_FOUND;
-    }
-    if (strlen( path ) >= sizeof(addr.sun_path))
-    {
-        WARN( "broker socket path %s is too long for AF_UNIX; treating as cancelled\n", debugstr_a(path) );
         free( path );
-        return STATUS_NAME_TOO_LONG;
+        return STATUS_BUFFER_TOO_SMALL;
     }
-    strcpy( addr.sun_path, path );
+    memcpy( params->result + params->result_len, path, len );
+    params->result_len += len;
+    free( path );
+    return STATUS_SUCCESS;
+invalid:
+    free( path );
+    return STATUS_INVALID_PARAMETER;
+}
 
+static NTSTATUS parse_response( DBusMessage *message, struct picker_show_params *params )
+{
+    DBusMessageIter args, results, entry, variant, uris;
+    const char *key, *uri;
+    dbus_uint32_t response;
+    NTSTATUS status;
+    BOOL found = FALSE;
+
+    if (!p_dbus_message_has_signature( message, "ua{sv}" )) return STATUS_INVALID_PARAMETER;
+    p_dbus_message_iter_init( message, &args );
+    p_dbus_message_iter_get_basic( &args, &response );
+    if (response == 1) return STATUS_SUCCESS; /* User cancelled. */
+    if (response) return STATUS_UNSUCCESSFUL;
+    p_dbus_message_iter_next( &args );
+    p_dbus_message_iter_recurse( &args, &results );
+    while (p_dbus_message_iter_get_arg_type( &results ) == DBUS_TYPE_DICT_ENTRY)
+    {
+        p_dbus_message_iter_recurse( &results, &entry );
+        p_dbus_message_iter_get_basic( &entry, &key );
+        p_dbus_message_iter_next( &entry );
+        p_dbus_message_iter_recurse( &entry, &variant );
+        if (!strcmp( key, "uris" ))
+        {
+            if (found || p_dbus_message_iter_get_arg_type( &variant ) != DBUS_TYPE_ARRAY)
+                return STATUS_INVALID_PARAMETER;
+            found = TRUE;
+            p_dbus_message_iter_recurse( &variant, &uris );
+            while (p_dbus_message_iter_get_arg_type( &uris ) != DBUS_TYPE_INVALID)
+            {
+                if (p_dbus_message_iter_get_arg_type( &uris ) != DBUS_TYPE_STRING) return STATUS_INVALID_PARAMETER;
+                if (params->result_len && params->mode != UNIX_PICKER_OPEN_MULTIPLE) return STATUS_INVALID_PARAMETER;
+                p_dbus_message_iter_get_basic( &uris, &uri );
+                if ((status = append_uri( params, uri ))) return status;
+                p_dbus_message_iter_next( &uris );
+            }
+        }
+        p_dbus_message_iter_next( &results );
+    }
+    return found && params->result_len ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
+}
+
+static NTSTATUS portal_show( struct picker_show_params *params )
+{
+    DBusError error = DBUS_ERROR_INIT;
+    DBusConnection *connection;
+    DBusMessage *request = NULL, *reply = NULL, *message;
+    const char *path, *owner, *name, *old_owner, *new_owner;
+    NTSTATUS status = STATUS_NOT_IMPLEMENTED;
+
+    pthread_once( &dbus_once, load_dbus );
+    if (!dbus_available) return STATUS_NOT_IMPLEMENTED;
+    if (!(connection = p_dbus_bus_get_private( DBUS_BUS_SESSION, &error ))) goto done;
+    p_dbus_connection_set_exit_on_disconnect( connection, FALSE );
+
+    /* Subscribe before calling: a fast Response may precede the method reply. A private
+     * connection lets us queue all portal responses, then match the returned handle. */
+    p_dbus_bus_add_match( connection, "type='signal',sender='" PORTAL_BUS "',interface='"
+                         PORTAL_REQUEST "',member='Response'", &error );
+    if (p_dbus_error_is_set( &error )) goto done;
+    p_dbus_bus_add_match( connection, "type='signal',sender='org.freedesktop.DBus',"
+                         "interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='"
+                         PORTAL_BUS "'", &error );
+    if (p_dbus_error_is_set( &error )) goto done;
     if (!(request = build_request( params )))
     {
-        free( path );
-        return STATUS_NO_MEMORY;
-    }
-
-    if ((fd = socket( AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0 )) < 0)
-    {
-        WARN( "socket() failed: %s\n", strerror( errno ) );
+        status = STATUS_NO_MEMORY;
         goto done;
     }
-    if (connect( fd, (struct sockaddr *)&addr, sizeof(addr) ) < 0)
-    {
-        WARN( "cannot reach the OrionBE launcher file picker broker at %s (%s); is the launcher running? "
-              "treating as cancelled\n", debugstr_a(path), strerror( errno ) );
-        status = STATUS_OBJECT_PATH_NOT_FOUND;
-        goto done;
-    }
+    /* Only service startup / method dispatch is bounded; the user can take as long as
+     * needed in the chooser. Bus disconnect or portal owner loss ends the wait. */
+    if (!(reply = p_dbus_connection_send_with_reply_and_block( connection, request, 5000, &error ))) goto done;
+    status = STATUS_INVALID_PARAMETER;
+    if (!p_dbus_message_has_signature( reply, "o" ) ||
+        !p_dbus_message_get_args( reply, NULL, DBUS_TYPE_OBJECT_PATH, &path, DBUS_TYPE_INVALID ) ||
+        !(owner = p_dbus_message_get_sender( reply ))) goto done;
 
-    TRACE( "request %s", debugstr_a(request) );
-    if (!write_all( fd, request, strlen( request ) ))
+    for (;;)
     {
-        WARN( "sending the picker request failed: %s\n", strerror( errno ) );
-        goto done;
+        if (!(message = p_dbus_connection_pop_message( connection )))
+        {
+            if (p_dbus_connection_read_write( connection, -1 )) continue;
+            status = STATUS_NOT_IMPLEMENTED;
+            break;
+        }
+        if (p_dbus_message_is_signal( message, PORTAL_REQUEST, "Response" ) &&
+            p_dbus_message_get_sender( message ) && !strcmp( p_dbus_message_get_sender( message ), owner ) &&
+            !strcmp( p_dbus_message_get_path( message ), path ))
+        {
+            status = parse_response( message, params );
+            p_dbus_message_unref( message );
+            break;
+        }
+        if (p_dbus_message_is_signal( message, DBUS_INTERFACE_DBUS, "NameOwnerChanged" ) &&
+            p_dbus_message_get_sender( message ) &&
+            !strcmp( p_dbus_message_get_sender( message ), DBUS_SERVICE_DBUS ) &&
+            p_dbus_message_get_args( message, NULL, DBUS_TYPE_STRING, &name, DBUS_TYPE_STRING, &old_owner,
+                                    DBUS_TYPE_STRING, &new_owner, DBUS_TYPE_INVALID ) &&
+            !strcmp( name, PORTAL_BUS ) && !strcmp( old_owner, owner ) && strcmp( new_owner, owner ))
+        {
+            status = STATUS_NOT_IMPLEMENTED;
+            p_dbus_message_unref( message );
+            break;
+        }
+        p_dbus_message_unref( message );
     }
-
-    if (!read_line( fd, &response ) || !response.data)
-    {
-        WARN( "the file picker broker closed the connection without an answer; treating as cancelled\n" );
-        goto done;
-    }
-    TRACE( "response %s\n", debugstr_a(response.data) );
-
-    if (!parse_response( response.data, out, error, sizeof(error) ))
-    {
-        WARN( "malformed broker response %s; treating as cancelled\n", debugstr_a(response.data) );
-        out->len = 0;
-        goto done;
-    }
-    if (*error) WARN( "broker: %s\n", debugstr_a(error) );
-    status = out->failed ? STATUS_NO_MEMORY : STATUS_SUCCESS;
-
 done:
-    if (fd >= 0) close( fd );
-    free( response.data );
-    free( request );
-    free( path );
+    if (p_dbus_error_is_set( &error ))
+    {
+        WARN( "file chooser portal unavailable: %s: %s\n", error.name, error.message );
+        if (!strcmp( error.name, DBUS_ERROR_NO_MEMORY )) status = STATUS_NO_MEMORY;
+        p_dbus_error_free( &error );
+    }
+    if (reply) p_dbus_message_unref( reply );
+    if (request) p_dbus_message_unref( request );
+    if (connection)
+    {
+        p_dbus_connection_close( connection );
+        p_dbus_connection_unref( connection );
+    }
     return status;
 }
 
-static BOOL test_override( struct picker_show_params *params, struct strbuf *out )
-{
-    const char *value = getenv( "ORIONBE_PICKER_TEST_RESULT" );
-    const char *p;
-
-    if (!value) return FALSE;
-    WARN( "ORIONBE_PICKER_TEST_RESULT=%s set, not asking the broker\n", debugstr_a(value) );
-    if (!*value || !strcmp( value, "cancel" )) return TRUE;
-    for (p = value; *p; p++)
-    {
-        if (*p == '|')
-        {
-            if (params->mode != UNIX_PICKER_OPEN_MULTIPLE) break;
-            strbuf_append( out, "\n" );
-        }
-        else strbuf_append_len( out, p, 1 );
-    }
-    return TRUE;
-}
+#endif /* SONAME_LIBDBUS_1 */
 
 static NTSTATUS picker_show( void *args )
 {
     struct picker_show_params *params = args;
-    struct strbuf out = {0};
-    NTSTATUS status = STATUS_SUCCESS;
-
-    TRACE( "mode %u, location %u, window %#llx, title %s, accept %s, filters %s, name %s, folder %s\n",
-           params->mode, params->start_location, (unsigned long long)params->x11_window, debugstr_a(params->title),
-           debugstr_a(params->accept_label), debugstr_a(params->filters), debugstr_a(params->current_name),
-           debugstr_a(params->current_folder) );
+    NTSTATUS status = STATUS_NOT_IMPLEMENTED;
 
     params->result_len = 0;
     if (params->result_size) params->result[0] = 0;
-
-    if (!test_override( params, &out ))
+#ifdef SONAME_LIBDBUS_1
+    status = portal_show( params );
+#endif
+    if (status)
     {
-        status = ask_broker( params, &out );
-        /* every failure to reach the broker is a cancel for the game, never an error */
-        if (status != STATUS_SUCCESS && status != STATUS_NO_MEMORY)
-        {
-            out.len = 0;
-            status = STATUS_SUCCESS;
-        }
+        params->result_len = 0;
+        if (params->result_size) params->result[0] = 0;
+        WARN( "file chooser failed, status %#x\n", (unsigned int)status );
     }
-    if (out.failed) status = STATUS_NO_MEMORY;
-
-    if (status == STATUS_SUCCESS && out.len && params->result_size)
-    {
-        /* keep only whole paths that fit */
-        size_t len = out.len;
-        while (len && len + 1 > params->result_size)
-        {
-            while (len && out.data[len - 1] != '\n') len--;
-            if (len) len--; /* drop the separator */
-        }
-        if (len) memcpy( params->result, out.data, len );
-        params->result[len] = 0;
-        params->result_len = len;
-    }
-    free( out.data );
     return status;
 }
 

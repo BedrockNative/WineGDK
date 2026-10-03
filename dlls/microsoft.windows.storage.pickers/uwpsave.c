@@ -279,7 +279,8 @@ static HRESULT uwp_pick_save_async( IUnknown *invoker, IUnknown *param, PROPVARI
 
     if (!called_async) return STATUS_PENDING;
 
-    if (!(paths = picker_run_dialog( request )))
+    if (FAILED(hr = picker_run_dialog( request, &paths ))) return hr;
+    if (!paths)
     {
         result->vt = VT_EMPTY; /* cancelled: null StorageFile, like Windows */
         return S_OK;
@@ -307,8 +308,13 @@ static HRESULT WINAPI uwp_save_PickSaveFileAsync( IOrionUwpFileSavePicker *iface
     TRACE( "iface %p, operation %p.\n", iface, operation );
 
     if (!operation) return E_POINTER;
-    if (FAILED(hr = picker_request_create( PICKER_KIND_SAVE, 0, &request ))) return hr;
     EnterCriticalSection( &impl->cs );
+    hr = picker_request_create( PICKER_KIND_SAVE, (UINT64)(ULONG_PTR)impl->hwnd, &request );
+    if (FAILED(hr))
+    {
+        LeaveCriticalSection( &impl->cs );
+        return hr;
+    }
     request->start_location = impl->start_location;
     request->accept_label = impl->commit_text ? wcsdup( impl->commit_text ) : NULL;
     request->current_name = impl->suggested_name ? wcsdup( impl->suggested_name ) : NULL;

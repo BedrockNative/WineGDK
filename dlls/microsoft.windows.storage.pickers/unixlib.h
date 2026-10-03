@@ -36,11 +36,11 @@ enum unix_picker_mode
  * start_location: Microsoft.Windows.Storage.Pickers.PickerLocationId value.
  * current_folder: Unix path (overrides start_location when set).
  *
- * On STATUS_SUCCESS, result holds '\n'-separated Unix paths (result_len bytes, not
- * counting the terminating '\0'); result_len == 0 means the user cancelled. Paths that
- * do not fit in result_size are dropped (the dialog is never shown twice).
- * The dialog itself is shown by the OrionBE launcher on the host (file picker broker,
- * $ORIONBE_PICKER_SOCKET); an unreachable broker is reported as a cancel. */
+ * On STATUS_SUCCESS, result holds NUL-terminated Unix paths (result_len bytes,
+ * including each terminating NUL); result_len == 0 means the user cancelled.
+ * An undersized result buffer returns STATUS_BUFFER_TOO_SMALL, never partial results.
+ * The dialog is shown by org.freedesktop.portal.FileChooser on the session bus.
+ * Missing D-Bus / portal support returns STATUS_NOT_IMPLEMENTED. */
 struct picker_show_params
 {
     UINT32 mode;

@@ -92,9 +92,9 @@ struct picker_request
 
 HRESULT picker_request_create( enum picker_kind kind, UINT64 window_id, struct picker_request **out );
 WCHAR *hstring_dup( HSTRING str );
-/* runs the dialog (blocking); returns a '\0'-separated, double-'\0'-terminated list of
- * Windows paths, or NULL when the user cancelled / no dialog backend is available */
-WCHAR *picker_run_dialog( struct picker_request *request );
+/* Runs the dialog (blocking). On success, paths is a double-NUL-terminated list of
+ * Windows paths, or NULL on user cancellation. An unavailable portal returns E_NOTIMPL. */
+HRESULT picker_run_dialog( struct picker_request *request, WCHAR **paths );
 
 HRESULT pick_file_result_create( const WCHAR *path, IPickFileResult **out );
 HRESULT pick_folder_result_create( const WCHAR *path, IPickFolderResult **out );

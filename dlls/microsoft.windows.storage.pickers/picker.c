@@ -228,9 +228,10 @@ static HRESULT pick_single_async( IUnknown *invoker, IUnknown *param, PROPVARIAN
 
     if (!called_async) return STATUS_PENDING;
 
-    if (!(paths = picker_run_dialog( request )))
+    if (FAILED(hr = picker_run_dialog( request, &paths ))) return hr;
+    if (!paths)
     {
-        /* cancelled (or no backend): completes with a null result, like Windows */
+        /* Cancelled: completes with a null result, like Windows. */
         result->vt = VT_EMPTY;
         return S_OK;
     }
@@ -273,7 +274,8 @@ static HRESULT pick_multiple_async( IUnknown *invoker, IUnknown *param, PROPVARI
     if (FAILED(hr = vector_inspectable_create( &iids, &vector ))) return hr;
 
     /* a cancel yields an empty list */
-    if ((paths = picker_run_dialog( request )))
+    hr = picker_run_dialog( request, &paths );
+    if (SUCCEEDED(hr) && paths)
     {
         for (p = paths; *p; p += wcslen( p ) + 1)
         {

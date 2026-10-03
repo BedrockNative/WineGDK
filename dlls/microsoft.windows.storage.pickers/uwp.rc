@@ -1,0 +1,4 @@
+/* Registration for the UWP classes implemented by this module. */
+
+/* @makedep: uwp.rgs */
+uwp WINE_REGISTRY "uwp.rgs"

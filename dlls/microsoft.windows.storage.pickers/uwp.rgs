@@ -1,0 +1,23 @@
+HKLM
+{
+    NoRemove Software
+    {
+        NoRemove Microsoft
+        {
+            NoRemove WindowsRuntime
+            {
+                NoRemove ActivatableClassId
+                {
+                    ForceRemove Windows.Storage.Pickers.FileSavePicker
+                    {
+                        val DllPath = s '%MODULE%'
+                    }
+                    ForceRemove Windows.Storage.StorageFile
+                    {
+                        val DllPath = s '%MODULE%'
+                    }
+                }
+            }
+        }
+    }
+}

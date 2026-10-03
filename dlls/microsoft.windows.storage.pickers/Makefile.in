@@ -1,6 +1,7 @@
 MODULE  = microsoft.windows.storage.pickers.dll
 UNIXLIB = microsoft.windows.storage.pickers.so
 IMPORTS = combase user32
+UNIX_CFLAGS = $(DBUS_CFLAGS)
 
 SOURCES = \
 	async.c \
@@ -13,5 +14,6 @@ SOURCES = \
 	picker.c \
 	storagefile.c \
 	unixlib.c \
+	uwp.rc \
 	uwpsave.c \
 	vector.c

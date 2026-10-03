@@ -19,6 +19,8 @@
 
 #include <stdlib.h>
 
+#include "ntstatus.h"
+#define WIN32_NO_STATUS
 #include "private.h"
 #include "winuser.h"
 #include "winnls.h"
@@ -80,6 +82,18 @@ static const IUnknownVtbl request_vtbl =
     request_Release,
 };
 
+static HWND get_picker_owner( UINT64 window_id )
+{
+    HWND hwnd = (HWND)(ULONG_PTR)window_id;
+    DWORD process;
+
+    if (!hwnd || !IsWindow( hwnd )) hwnd = GetForegroundWindow();
+    if (!hwnd) return NULL;
+    hwnd = GetAncestor( hwnd, GA_ROOT );
+    GetWindowThreadProcessId( hwnd, &process );
+    return process == GetCurrentProcessId() ? hwnd : NULL;
+}
+
 HRESULT picker_request_create( enum picker_kind kind, UINT64 window_id, struct picker_request **out )
 {
     struct picker_request *impl;
@@ -88,7 +102,8 @@ HRESULT picker_request_create( enum picker_kind kind, UINT64 window_id, struct p
     impl->IUnknown_iface.lpVtbl = &request_vtbl;
     impl->ref = 1;
     impl->kind = kind;
-    impl->window_id = window_id;
+    /* Resolve the owner on the caller's thread, before the async worker starts. */
+    impl->window_id = (UINT64)(ULONG_PTR)get_picker_owner( window_id );
     impl->start_location = PickerLocationId_Unspecified;
     *out = impl;
     return S_OK;
@@ -124,14 +139,7 @@ static UINT64 get_x11_window( UINT64 window_id )
     HWND hwnd = (HWND)(ULONG_PTR)window_id;
     HANDLE xwin;
 
-    /* Microsoft.UI.WindowId of a Win32 top-level window carries its HWND value */
-    if (!hwnd || !IsWindow( hwnd ))
-    {
-        if (window_id) WARN( "window id %s is not a HWND, using the foreground window\n", wine_dbgstr_longlong( window_id ) );
-        hwnd = GetForegroundWindow();
-    }
-    if (!hwnd) return 0;
-    hwnd = GetAncestor( hwnd, GA_ROOT );
+    if (!hwnd || !IsWindow( hwnd )) return 0;
     xwin = GetPropW( hwnd, L"__wine_x11_whole_window" );
     TRACE( "hwnd %p -> X11 window %p\n", hwnd, xwin );
     return (UINT64)(ULONG_PTR)xwin;
@@ -189,17 +197,21 @@ static BOOL path_has_extension( const WCHAR *path )
     return dot && dot != name;
 }
 
-WCHAR *picker_run_dialog( struct picker_request *request )
+HRESULT picker_run_dialog( struct picker_request *request, WCHAR **paths )
 {
     struct picker_show_params params = {0};
     char *title, *accept, *filters, *name, *folder;
     WCHAR *ret = NULL;
     size_t ret_len = 0;
     NTSTATUS status;
-    char *p, *next;
+    HRESULT hr = S_OK;
+    char *p;
+    HWND owner = (HWND)(ULONG_PTR)request->window_id;
+    BOOL restore_owner = FALSE;
 
+    *paths = NULL;
     InitOnceExecuteOnce( &init_once, init_unixlib, NULL, NULL );
-    if (!unix_ready) return NULL;
+    if (!unix_ready) return E_NOTIMPL;
 
     switch (request->kind)
     {
@@ -216,12 +228,35 @@ WCHAR *picker_run_dialog( struct picker_request *request )
     params.current_name = name = to_utf8( request->current_name );
     params.current_folder = folder = dos_to_unix( request->current_folder );
     params.result_size = RESULT_BUFFER_SIZE;
-    if (!(params.result = malloc( params.result_size ))) goto done;
+    if ((request->title && !title) || (request->accept_label && !accept) ||
+        (request->filters && !filters) || (request->current_name && !name) ||
+        !(params.result = malloc( params.result_size )))
+    {
+        hr = E_OUTOFMEMORY;
+        goto done;
+    }
 
+    /* The native dialog is outside Wine's window hierarchy. Prevent the game from
+     * reclaiming keyboard focus or trapping the pointer while its modal picker is up.
+     * EnableWindow also sends WM_CANCELMODE to the owner's UI thread. */
+    if (owner && IsWindow( owner ) && IsWindowEnabled( owner ))
+    {
+        EnableWindow( owner, FALSE );
+        restore_owner = TRUE;
+        ClipCursor( NULL );
+    }
     status = WINE_UNIX_CALL( unix_picker_show, &params );
+    if (restore_owner && IsWindow( owner ))
+    {
+        EnableWindow( owner, TRUE );
+        SetForegroundWindow( owner );
+    }
     if (status)
     {
-        ERR( "picker_show failed, status %#lx; returning a cancelled result\n", status );
+        WARN( "picker_show failed, status %#lx\n", status );
+        if (status == STATUS_NOT_IMPLEMENTED) hr = E_NOTIMPL;
+        else if (status == STATUS_NO_MEMORY) hr = E_OUTOFMEMORY;
+        else hr = HRESULT_FROM_WIN32( RtlNtStatusToDosError( status ) );
         goto done;
     }
     if (!params.result_len)
@@ -230,35 +265,38 @@ WCHAR *picker_run_dialog( struct picker_request *request )
         goto done;
     }
 
-    /* '\n'-separated Unix paths -> '\0'-separated Windows paths */
-    for (p = params.result; p && *p; p = next)
+    /* NUL-terminated Unix paths -> double-NUL-terminated Windows path list. */
+    for (p = params.result; p < params.result + params.result_len; p += strlen( p ) + 1)
     {
         WCHAR *dos, *tmp;
         size_t len;
 
-        if ((next = strchr( p, '\n' ))) *next++ = 0;
-        if (!*p) continue;
         if (!(dos = unix_to_dos( p )))
         {
             WARN( "cannot convert %s to a Windows path\n", debugstr_a(p) );
-            continue;
+            hr = E_FAIL;
+            goto done;
         }
         if (request->kind == PICKER_KIND_SAVE && request->default_ext && !path_has_extension( dos ))
         {
             len = wcslen( dos ) + wcslen( request->default_ext ) + 2;
-            if ((tmp = malloc( len * sizeof(WCHAR) )))
+            if (!(tmp = malloc( len * sizeof(WCHAR) )))
             {
-                swprintf( tmp, len, L"%s%s%s", dos, request->default_ext[0] == '.' ? L"" : L".", request->default_ext );
                 free( dos );
-                dos = tmp;
+                hr = E_OUTOFMEMORY;
+                goto done;
             }
+            swprintf( tmp, len, L"%s%s%s", dos, request->default_ext[0] == '.' ? L"" : L".", request->default_ext );
+            free( dos );
+            dos = tmp;
         }
         TRACE( "picked %s -> %s\n", debugstr_a(p), debugstr_w(dos) );
         len = wcslen( dos ) + 1;
         if (!(tmp = realloc( ret, (ret_len + len + 1) * sizeof(WCHAR) )))
         {
             free( dos );
-            break;
+            hr = E_OUTOFMEMORY;
+            goto done;
         }
         ret = tmp;
         memcpy( ret + ret_len, dos, len * sizeof(WCHAR) );
@@ -274,5 +312,7 @@ done:
     free( filters );
     free( name );
     free( folder );
-    return ret;
+    if (FAILED(hr)) free( ret );
+    else *paths = ret;
+    return hr;
 }
