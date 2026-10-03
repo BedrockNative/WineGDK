@@ -96,7 +96,8 @@ struct MsaTokenResponse :
 {
 public:
     MsaTokenResponse() = default;
-    MsaTokenResponse( const char *token ) : token(token) {};
+    MsaTokenResponse( const char *token, const char *puid, const char *device_rps )
+        : token(token), puid(puid), device_rps(device_rps) {};
     virtual ~MsaTokenResponse() = default;
 
     MsaTokenResponse( const MsaTokenResponse& ) = delete;
@@ -110,11 +111,15 @@ public:
     /* IMsaTokenResponse Methods */
     HRESULT WINAPI get_Token( const char **out );
     HRESULT WINAPI get_Expiry( ABI::Windows::Foundation::DateTime *out );
+    HRESULT WINAPI get_Puid( const char **out );
+    HRESULT WINAPI get_DeviceRps( const char **out );
 
 private:
     ABI::Windows::Foundation::DateTime Expiry{};
     std::atomic_long ref{ 1 };
     const char *token = NULL;
+    const char *puid = NULL;
+    const char *device_rps = NULL;
 };
 
 struct MsaTokenRequestContext

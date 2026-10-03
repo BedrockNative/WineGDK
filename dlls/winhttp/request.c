@@ -41,6 +41,7 @@
 #include "winhttp_private.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(winhttp);
+WINE_DECLARE_DEBUG_CHANNEL(winhttp_body);
 
 #define DEFAULT_KEEP_ALIVE_TIMEOUT 30000
 
@@ -2550,14 +2551,6 @@ static DWORD send_request( struct request *request, const WCHAR *headers, DWORD 
         TRACE( "failed to add request headers: %lu\n", ret );
         return ret;
     }
-    /* Bedrock posts titles/current without contract-version → Xbox Forbidden + rate-limit → Offline. */
-    if (request->path && wcsstr( request->path, L"/titles/current" ))
-    {
-        process_header( request, L"Content-Type", L"application/json",
-                        WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE, TRUE );
-        process_header( request, L"x-xbl-contract-version", L"3",
-                        WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE, TRUE );
-    }
     if (request->hdr.decompression)
     {
         WCHAR encoding[16];
@@ -2593,34 +2586,11 @@ static DWORD send_request( struct request *request, const WCHAR *headers, DWORD 
 
     if (optional_len)
     {
-        const void *send_buf = optional;
-        DWORD send_len = optional_len;
-        static char presence_optional[512];
-
-        /*
-         * Game sends titles/current via SendRequest optional (not WriteData).
-         * Must match the body XUser signed (id+state padded to original length).
-         */
-        if (optional && request->path && wcsstr( request->path, L"/titles/current" ) &&
-            !(optional_len >= 6 && !memcmp( optional, "{\"id\":", 6 )))
-        {
-            DWORD need = (DWORD)snprintf( presence_optional, sizeof(presence_optional),
-                                          "{\"id\":\"1739947436\",\"state\":\"active\"}" );
-            if (need && need < optional_len && optional_len < sizeof(presence_optional))
-            {
-                memset( presence_optional + need, ' ', optional_len - need );
-                presence_optional[optional_len] = 0;
-                send_buf = presence_optional;
-                send_len = optional_len;
-                TRACE( "rewrote titles/current SendRequest body to %lu bytes.\n", send_len );
-            }
-        }
-
-        if ((ret = netconn_send( request->netconn, send_buf, send_len, &bytes_sent, NULL ))) goto end;
+        if ((ret = netconn_send( request->netconn, optional, optional_len, &bytes_sent, NULL ))) goto end;
         request->optional = optional;
         request->optional_len = optional_len;
         if (bytes_sent > 0) request->bytes_written += bytes_sent;
-        len += send_len;
+        len += optional_len;
     }
 
     request->state = REQUEST_STATE_REQUEST_SENT;
@@ -3607,24 +3577,18 @@ static DWORD read_data( struct request *request, char *buffer, DWORD size, DWORD
     }
 
     TRACE( "%lu bytes read\n", bytes_read );
-    if (bytes_read && buffer && request->connect && request->connect->hostname &&
-        (wcsstr( request->connect->hostname, L"peoplehub.xboxlive.com" ) ||
-         wcsstr( request->connect->hostname, L"playfabapi.com" ) ||
-         bytes_read <= 2048))
+    if (TRACE_ON(winhttp_body) && bytes_read && buffer)
     {
-        FILE *df = fopen( "/home/perfect/OrionBE/logs/http-body-dump.txt", "a" );
-        if (df)
+        DWORD status, status_size = sizeof(status), offset, limit = min(bytes_read, 2048);
+
+        if (!query_headers( request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            NULL, &status, &status_size, NULL ) && status >= 400)
         {
-            DWORD dump_len = bytes_read;
-            if (dump_len > 2048) dump_len = 2048;
-            fprintf( df, "bytes=%lu host=", bytes_read );
-            fprintf( df, "%s", debugstr_w( request->connect->hostname ) );
-            if (request->path)
-                fprintf( df, " path=%s", debugstr_w( request->path ) );
-            fputc( '\n', df );
-            fwrite( buffer, 1, dump_len, df );
-            fputc( '\n', df );
-            fclose( df );
+            TRACE_(winhttp_body)( "HTTP %lu host %s path %s, %lu bytes\n", status,
+                    debugstr_w(request->connect->hostname), debugstr_w(request->path), bytes_read );
+            for (offset = 0; offset < limit; offset += 128)
+                TRACE_(winhttp_body)( "body[%lu] %s\n", offset,
+                        debugstr_an(buffer + offset, min(128, limit - offset)) );
         }
     }
     if (end_of_data_stream( request )) finished_reading( request );
@@ -3741,7 +3705,6 @@ static DWORD write_data( struct request *request, const void *buffer, DWORD to_w
 {
     DWORD ret;
     int num_bytes;
-    static char presence_body[512];
 
     /* Cap writes to the Content-Length declared in SendRequest. Nested WRITE_COMPLETE
      * callbacks (libhttpclient) can otherwise re-send the same body and trip AFD 400. */
@@ -3757,27 +3720,6 @@ static DWORD write_data( struct request *request, const void *buffer, DWORD to_w
         }
         if (to_write > request->send_total_len - request->bytes_written)
             to_write = request->send_total_len - request->bytes_written;
-    }
-
-    /*
-     * Rewrite presence activity posts (no title id) to the body Xbox accepts with
-     * Android TitleToken. Keep exact Content-Length via trailing spaces.
-     */
-    if (to_write && buffer && request->path && wcsstr( request->path, L"/titles/current" ) &&
-        request->bytes_written == 0 &&
-        !(to_write >= 6 && !memcmp( buffer, "{\"id\":", 6 )))
-    {
-        DWORD need = (DWORD)snprintf( presence_body, sizeof(presence_body),
-                                      "{\"id\":\"1739947436\",\"state\":\"active\"}" );
-        DWORD target = request->send_total_len ? request->send_total_len : to_write;
-        if (need && need < sizeof(presence_body) && target >= need && target < sizeof(presence_body))
-        {
-            memset( presence_body + need, ' ', target - need );
-            presence_body[target] = 0;
-            buffer = presence_body;
-            to_write = target;
-            TRACE( "rewrote titles/current presence body to %lu bytes.\n", to_write );
-        }
     }
 
     if (to_write && buffer && request->connect && request->connect->hostname &&

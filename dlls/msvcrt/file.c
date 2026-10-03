@@ -47,6 +47,8 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
 
+extern int MSVCRT_app_type;
+
 #undef _fstat
 #undef _fstati64
 #undef _stat
@@ -555,7 +557,12 @@ static void msvcrt_free_fd(int fd)
   }
   TRACE(":fd (%d) freed\n",fd);
 
-  if (fd < 3)
+  /* UCRT only synchronizes Win32 standard handles for console applications. */
+  if (fd < 3
+#if _MSVCR_VER >= 140
+      && MSVCRT_app_type == 1
+#endif
+     )
   {
     switch (fd)
     {
@@ -583,7 +590,12 @@ static void msvcrt_set_fd(ioinfo *fdinfo, HANDLE hand, int flag)
   ioinfo_set_unicode(fdinfo, FALSE);
   ioinfo_set_textmode(fdinfo, TEXTMODE_ANSI);
 
-  if (hand != MSVCRT_NO_CONSOLE)
+  /* GUI applications keep the handles supplied by AllocConsole or their parent. */
+  if (hand != MSVCRT_NO_CONSOLE
+#if _MSVCR_VER >= 140
+      && MSVCRT_app_type == 1
+#endif
+     )
   {
     switch (fdinfo-MSVCRT___pioinfo[0])
     {

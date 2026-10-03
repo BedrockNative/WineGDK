@@ -129,6 +129,8 @@ namespace Xodus
     {
         [propget] HRESULT Token( [out, retval] const char **out );
         [propget] HRESULT Expiry( [out, retval] Windows.Foundation.DateTime *out );
+        [propget] HRESULT Puid( [out, retval, string] const char **out );
+        [propget] HRESULT DeviceRps( [out, retval, string] const char **out );
     }
 
     [

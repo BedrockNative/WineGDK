@@ -219,6 +219,8 @@ MsaTokenResponse::Release() noexcept
     if ( !curr )
     {
         if (token) free( const_cast<char *>(token) );
+        free( const_cast<char *>(puid) );
+        free( const_cast<char *>(device_rps) );
         delete this;
     }
 
@@ -233,6 +235,28 @@ MsaTokenResponse::get_Token( const char **out )
     *out = nullptr;
     if (!token) return E_UNEXPECTED;
     if (!(*out = strdup( token ))) return E_OUTOFMEMORY;
+    return S_OK;
+}
+
+HRESULT WINAPI
+MsaTokenResponse::get_Puid( const char **out )
+{
+    if (!out) return E_POINTER;
+    *out = nullptr;
+    /* Older services do not supply an account ID; they remain usable without
+     * sharing authentication state between XUserAdd calls. */
+    if (!puid) return S_OK;
+    if (!(*out = strdup( puid ))) return E_OUTOFMEMORY;
+    return S_OK;
+}
+
+HRESULT WINAPI
+MsaTokenResponse::get_DeviceRps( const char **out )
+{
+    if (!out) return E_POINTER;
+    *out = nullptr;
+    if (!device_rps) return S_OK;
+    if (!(*out = strdup( device_rps ))) return E_OUTOFMEMORY;
     return S_OK;
 }
 

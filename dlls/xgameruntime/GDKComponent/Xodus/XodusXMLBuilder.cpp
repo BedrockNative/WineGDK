@@ -164,7 +164,7 @@ public:
     {
         xmlNodePtr child, root;
         xmlChar *content = nullptr;
-        char *token = nullptr;
+        char *token = nullptr, *puid = nullptr, *device_rps = nullptr;
         xmlDocPtr doc;
         HRESULT hr = E_INVALIDARG;
 
@@ -191,9 +191,40 @@ public:
             hr = E_OUTOFMEMORY;
             goto cleanup;
         }
-        if (!(*response = new (std::nothrow) MsaTokenResponse( token )))
+        xmlFree( content );
+        content = nullptr;
+        for (child = root->children; child; child = child->next)
+            if (child->type == XML_ELEMENT_NODE && !xmlStrcmp( child->name, BAD_CAST "Puid" ))
+            {
+                content = xmlNodeGetContent( child );
+                break;
+            }
+        if (content && *content && !(puid = strdup( reinterpret_cast<char *>(content) )))
         {
             free( token );
+            hr = E_OUTOFMEMORY;
+            goto cleanup;
+        }
+        xmlFree( content );
+        content = nullptr;
+        for (child = root->children; child; child = child->next)
+            if (child->type == XML_ELEMENT_NODE && !xmlStrcmp( child->name, BAD_CAST "DeviceRps" ))
+            {
+                content = xmlNodeGetContent( child );
+                break;
+            }
+        if (content && *content && !(device_rps = strdup( reinterpret_cast<char *>(content) )))
+        {
+            free( token );
+            free( puid );
+            hr = E_OUTOFMEMORY;
+            goto cleanup;
+        }
+        if (!(*response = new (std::nothrow) MsaTokenResponse( token, puid, device_rps )))
+        {
+            free( token );
+            free( puid );
+            free( device_rps );
             hr = E_OUTOFMEMORY;
             goto cleanup;
         }

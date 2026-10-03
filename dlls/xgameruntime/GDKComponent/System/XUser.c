@@ -105,6 +105,40 @@ static HRESULT get_json_utf8( IJsonObject *object, const WCHAR *key, char **valu
     return hr;
 }
 
+static HRESULT quote_json_string( HSTRING string, char **out )
+{
+    char *utf8, *result, *ptr;
+    const unsigned char *src;
+    SIZE_T length;
+    HRESULT hr;
+
+    *out = NULL;
+    if (FAILED(hr = HSTRINGToMultiByte( string, &utf8 ))) return hr;
+    length = strlen( utf8 );
+    if (length > (~(SIZE_T)0 - 3) / 6 || !(result = malloc( length * 6 + 3 )))
+    {
+        free( utf8 );
+        return E_OUTOFMEMORY;
+    }
+    ptr = result;
+    *ptr++ = '"';
+    for (src = (unsigned char *)utf8; *src; ++src)
+    {
+        if (*src == '"' || *src == '\\') *ptr++ = '\\';
+        if (*src < 0x20)
+        {
+            sprintf( ptr, "\\u%04x", *src );
+            ptr += 6;
+        }
+        else *ptr++ = *src;
+    }
+    *ptr++ = '"';
+    *ptr = 0;
+    free( utf8 );
+    *out = result;
+    return S_OK;
+}
+
 static HRESULT parse_json( const char *json, SIZE_T jsonLen, IJsonObject **object )
 {
     static const WCHAR *name = RuntimeClass_Windows_Data_Json_JsonValue;
@@ -197,8 +231,10 @@ struct XUser
     HSTRING refreshToken;
     HSTRING userToken;
     HSTRING deviceToken;
+    HSTRING deviceRps;
     HSTRING titleToken;
     HSTRING xstsToken;
+    ULONGLONG xstsExpiry;
     char *xstsRelyingParty;
     BOOL xstsWithTitle;
     struct xsts_entry xstsCache[XSTS_CACHE_SIZE];
@@ -306,6 +342,7 @@ static ULONG WINAPI user_Release( IUser *iface )
         if (impl->refreshToken) WindowsDeleteString( impl->refreshToken );
         if (impl->userToken) WindowsDeleteString( impl->userToken );
         if (impl->deviceToken) WindowsDeleteString( impl->deviceToken );
+        WindowsDeleteString( impl->deviceRps );
         if (impl->titleToken) WindowsDeleteString( impl->titleToken );
         if (impl->xstsToken) WindowsDeleteString( impl->xstsToken );
         free( impl->xstsRelyingParty );
@@ -636,12 +673,8 @@ cleanup:
 
 static UINT32 user_resolve_presence_title_id( void )
 {
-    /*
-     * TitleToken must match the MSA app that minted it.
-     * Windows MSA (40159362) still fails PoP for 896928775 in WineGDK; Android MSA
-     * mints 1739947436 and that unblocks join + presence claims.
-     * Keep Win32/Windows TitleId only when MSA is the Windows Bedrock client.
-     */
+    /* The presence title must match the application that authenticated it.
+     * Keep compatibility with explicitly configured legacy Android clients. */
     if (msaAppId && !strcmp( msaAppId, "0000000048183522" ))
         return 1739947436u; /* Android Bedrock — required for TitleToken with Android MSA */
     return titleId ? titleId : 896928775u;
@@ -657,54 +690,45 @@ static const char *user_resolve_device_type( void )
 
 static HRESULT user_request_title_token_sisu( struct XUser *impl )
 {
-    char *body = NULL, *deviceTok = NULL, *access = NULL;
+    char *body = NULL, *device = NULL, *access = NULL, *app = NULL;
+    HSTRING ticket = NULL, app_string = NULL;
     UCHAR *buffer = NULL;
     SIZE_T bufferSize = 0;
     IJsonObject *object = NULL, *title = NULL;
     HRESULT hr;
-    UINT32 wAccessLen;
-    const WCHAR *wAccess;
 
-    if (!impl->accessToken) return E_UNEXPECTED;
-    if (FAILED(hr = HSTRINGToMultiByte( impl->deviceToken, &deviceTok ))) return hr;
-
-    wAccess = WindowsGetStringRawBuffer( impl->accessToken, &wAccessLen );
-    if (!(access = calloc( wAccessLen * 4 + 1, 1 )))
+    if (!impl->accessToken || !msaAppId) return E_UNEXPECTED;
+    if (impl->deviceRps)
     {
-        free( deviceTok );
-        return E_OUTOFMEMORY;
+        /* RST2 tickets from the Windows broker must be sent verbatim. The t=
+         * prefix belongs to the OAuth flow and invalidates these credentials. */
+        hr = WindowsDuplicateString( impl->accessToken, &ticket );
     }
-    if (!WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wAccess, wAccessLen, access, wAccessLen * 4, NULL, NULL ))
+    else
     {
-        hr = HRESULT_FROM_WIN32( GetLastError() );
-        free( deviceTok );
-        free( access );
-        return hr;
+        const WCHAR *raw = WindowsGetStringRawBuffer( impl->accessToken, NULL );
+        WCHAR *prefixed;
+        if ((raw[0] == 'd' || raw[0] == 't') && raw[1] == '=') raw += 2;
+        if (!(prefixed = malloc( (wcslen( raw ) + 3) * sizeof(WCHAR) ))) return E_OUTOFMEMORY;
+        wcscpy( prefixed, L"t=" );
+        wcscat( prefixed, raw );
+        hr = WindowsCreateString( prefixed, wcslen( prefixed ), &ticket );
+        free( prefixed );
     }
-    /* OAuth access token must be raw; SISU wants t=<token>. Avoid t=d=... double prefix. */
+    if (FAILED(hr)) goto cleanup;
+    if (FAILED(hr = MultiByteToHSTRING( msaAppId, strlen( msaAppId ), &app_string ))) goto cleanup;
+    if (FAILED(hr = quote_json_string( ticket, &access ))) goto cleanup;
+    if (FAILED(hr = quote_json_string( impl->deviceToken, &device ))) goto cleanup;
+    if (FAILED(hr = quote_json_string( app_string, &app ))) goto cleanup;
+    if (!(body = malloc( strlen( access ) + strlen( device ) + strlen( app ) + PROOF_KEY_SIZE + 256 )))
     {
-        char *raw = access;
-        if (!strncmp( raw, "d=", 2 ) || !strncmp( raw, "t=", 2 )) raw += 2;
-        if (raw != access) memmove( access, raw, strlen( raw ) + 1 );
+        hr = E_OUTOFMEMORY;
+        goto cleanup;
     }
-
-    if (!(body = calloc( 1, 768 + PROOF_KEY_SIZE + strlen( deviceTok ) + strlen( access ) + (msaAppId ? strlen( msaAppId ) : 0) )))
-    {
-        free( deviceTok );
-        free( access );
-        return E_OUTOFMEMORY;
-    }
-
-    sprintf( body,
-             "{\"Sandbox\":\"RETAIL\",\"UseModernGamertag\":true,\"AppId\":\"%s\","
-             "\"AccessToken\":\"t=%s\",\"DeviceToken\":\"%s\",\"ProofKey\":",
-             msaAppId ? msaAppId : "0000000048183522", access, deviceTok );
-    strncat( body, impl->proofKey, PROOF_KEY_SIZE );
-    strcat( body, ",\"RelyingParty\":\"http://xboxlive.com\"}" );
-
-    free( deviceTok );
-    free( access );
-
+    sprintf( body, "{\"Sandbox\":\"RETAIL\",\"UseModernGamertag\":true,\"AppId\":%s,"
+             "\"AccessToken\":%s,\"DeviceToken\":%s,\"SiteName\":\"user.auth.xboxlive.com\","
+             "\"ProofKey\":%.*s,\"RelyingParty\":\"http://xboxlive.com\"}",
+             app, access, device, (int)PROOF_KEY_SIZE, impl->proofKey );
     if (FAILED(hr = user_http_request_signed( impl, L"sisu.xboxlive.com", L"/authorize", body, &buffer, &bufferSize )))
     {
         WARN( "SISU authorize failed, hr %#lx.\n", hr );
@@ -714,11 +738,43 @@ static HRESULT user_request_title_token_sisu( struct XUser *impl )
     if (FAILED(hr = get_json_object( object, L"TitleToken", &title ))) goto cleanup;
     if (FAILED(hr = get_json_string( title, L"Token", &impl->titleToken ))) goto cleanup;
     TRACE( "Obtained Xbox title token via SISU.\n" );
-
 cleanup:
     free( body );
+    free( device );
+    free( access );
+    free( app );
     free( buffer );
+    WindowsDeleteString( ticket );
+    WindowsDeleteString( app_string );
     if (title) IJsonObject_Release( title );
+    if (object) IJsonObject_Release( object );
+    return hr;
+}
+
+static HRESULT user_request_device_token_rps( struct XUser *impl )
+{
+    char *ticket = NULL, *body = NULL;
+    IJsonObject *object = NULL;
+    UCHAR *buffer = NULL;
+    SIZE_T size = 0;
+    HRESULT hr;
+
+    if (FAILED(hr = quote_json_string( impl->deviceRps, &ticket ))) return hr;
+    if (!(body = malloc( strlen( ticket ) + PROOF_KEY_SIZE + 256 )))
+    {
+        free( ticket );
+        return E_OUTOFMEMORY;
+    }
+    sprintf( body, "{\"RelyingParty\":\"http://auth.xboxlive.com\",\"TokenType\":\"JWT\","
+             "\"Properties\":{\"AuthMethod\":\"RPS\",\"RpsTicket\":%s,"
+             "\"SiteName\":\"user.auth.xboxlive.com\",\"Version\":\"10.0.22621\",\"ProofKey\":%.*s}}",
+             ticket, (int)PROOF_KEY_SIZE, impl->proofKey );
+    hr = user_http_request_signed( impl, L"device.auth.xboxlive.com", L"/device/authenticate", body, &buffer, &size );
+    if (SUCCEEDED(hr)) hr = parse_json( (char *)buffer, size, &object );
+    if (SUCCEEDED(hr)) hr = get_json_string( object, L"Token", &impl->deviceToken );
+    free( ticket );
+    free( body );
+    free( buffer );
     if (object) IJsonObject_Release( object );
     return hr;
 }
@@ -734,6 +790,15 @@ static HRESULT user_ensure_device_and_title_tokens( struct XUser *impl )
     const char *deviceType = user_resolve_device_type();
 
     if (impl->deviceToken && impl->titleToken) return S_OK;
+
+    if (impl->deviceRps)
+    {
+        if (!impl->deviceToken && FAILED(hr = user_request_device_token_rps( impl ))) goto cleanup;
+        hr = user_request_title_token_sisu( impl );
+        /* RPS authenticates the configured Windows app. Do not switch to a
+         * different title identity if that request fails. */
+        goto cleanup;
+    }
 
     if (!impl->deviceId[0])
     {
@@ -976,61 +1041,6 @@ cleanup:
 }
 
 
-static HRESULT user_publish_presence_online( struct XUser *impl )
-{
-    static time_t last_publish;
-    WCHAR *headers = NULL, path[160];
-    char body[96];
-    UCHAR *buffer = NULL;
-    SIZE_T bufferSize = 0;
-    UINT32 userHashLen = 0, tokenLen = 0, headersLen;
-    const WCHAR *userHash, *token;
-    UINT32 tid = user_resolve_presence_title_id();
-    time_t now = time( NULL );
-    HRESULT hr;
-
-    if (!impl->xstsToken || !impl->userHash || !impl->xuid) return E_UNEXPECTED;
-    if (!impl->deviceToken || !impl->titleToken) return S_FALSE;
-    if (last_publish && now != (time_t)-1 && (now - last_publish) < 20) return S_OK;
-
-    snprintf( body, sizeof(body), "{\"id\":\"%u\",\"state\":\"active\"}", tid );
-    swprintf( path, ARRAY_SIZE(path), L"/users/xuid(%llu)/devices/current/titles/current",
-              (unsigned long long)impl->xuid );
-
-    userHash = WindowsGetStringRawBuffer( impl->userHash, &userHashLen );
-    token = WindowsGetStringRawBuffer( impl->xstsToken, &tokenLen );
-    headersLen = (UINT32)(wcslen( L"Content-Type: application/json\r\nx-xbl-contract-version: 3\r\nAuthorization: XBL3.0 x=;" )
-                 + userHashLen + tokenLen + 8);
-    if (!(headers = calloc( headersLen + 1, sizeof(WCHAR) ))) return E_OUTOFMEMORY;
-    wcscpy( headers, L"Content-Type: application/json\r\nx-xbl-contract-version: 3\r\nAuthorization: XBL3.0 x=" );
-    wcsncat( headers, userHash, userHashLen );
-    wcscat( headers, L";" );
-    wcsncat( headers, token, tokenLen );
-
-    hr = http_request( L"POST", L"userpresence.xboxlive.com", path, body, headers, ACCEPT_JSON, &buffer, &bufferSize );
-    {
-        FILE *df = fopen( "/home/perfect/OrionBE/logs/presence-publish.txt", "a" );
-        if (df)
-        {
-            fprintf( df, "publish hr=%#lx tid=%u body=%s bytes=%zu\n", (unsigned long)hr, tid, body, bufferSize );
-            if (buffer && bufferSize) fwrite( buffer, 1, bufferSize < 500 ? bufferSize : 500, df );
-            fputc( '\n', df );
-            fclose( df );
-        }
-    }
-    if (SUCCEEDED(hr))
-    {
-        last_publish = now;
-        TRACE( "Published Xbox presence online for TitleId %u.\n", tid );
-    }
-    else
-        WARN( "Presence publish failed, hr %#lx.\n", hr );
-
-    free( headers );
-    free( buffer );
-    return hr;
-}
-
 static void user_xsts_cache_clear( struct XUser *impl )
 {
     for (UINT32 i = 0; i < impl->xstsCacheCount; ++i)
@@ -1189,6 +1199,36 @@ static BOOL url_wants_title_claims( const URL_COMPONENTSA *url, const char *rely
     return TRUE;
 }
 
+static ULONGLONG xsts_expiry( IJsonObject *object )
+{
+    HSTRING string = NULL;
+    SYSTEMTIME system = {0};
+    FILETIME file;
+    const WCHAR *value, *tail;
+    ULONGLONG expiry = 0;
+    int offset = 0;
+
+    if (FAILED(get_json_string( object, L"NotAfter", &string ))) return 0;
+    value = WindowsGetStringRawBuffer( string, NULL );
+    if (swscanf( value, L"%4hu-%2hu-%2huT%2hu:%2hu:%2hu%n", &system.wYear, &system.wMonth,
+            &system.wDay, &system.wHour, &system.wMinute, &system.wSecond, &offset ) == 6)
+    {
+        tail = value + offset;
+        /* Round fractional seconds down, so the cache never extends validity. */
+        if (*tail == '.')
+        {
+            ++tail;
+            if (*tail < '0' || *tail > '9') goto done;
+            while (*tail >= '0' && *tail <= '9') ++tail;
+        }
+        if (*tail == 'Z' && !tail[1] && SystemTimeToFileTime( &system, &file ))
+            expiry = ((ULONGLONG)file.dwHighDateTime << 32) | file.dwLowDateTime;
+    }
+done:
+    WindowsDeleteString( string );
+    return expiry;
+}
+
 static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingParty, BOOL withTitle )
 {
     static const char prefix[] = "{\"TokenType\":\"JWT\",\"RelyingParty\":\"";
@@ -1286,6 +1326,7 @@ static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingP
     if (impl->userHash) WindowsDeleteString( impl->userHash );
     free( impl->xstsRelyingParty );
     impl->xstsToken = newToken;
+    impl->xstsExpiry = xsts_expiry( object );
     impl->userHash = newUserHash;
     impl->xstsRelyingParty = newRelyingParty;
     impl->xstsWithTitle = withTitle;
@@ -1293,10 +1334,6 @@ static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingP
     newToken = NULL;
     newUserHash = NULL;
     newRelyingParty = NULL;
-
-    if (withTitle && impl->deviceToken && impl->titleToken &&
-        relyingParty && !strcmp( relyingParty, "http://xboxlive.com" ))
-        user_publish_presence_online( impl );
 
 cleanup:
     free( body );
@@ -1569,7 +1606,9 @@ static HRESULT finish_user_load( XUserHandle impl )
         WARN( "Xbox proof-key generation failed, hr %#lx.\n", hr );
         goto cleanup;
     }
-    if (FAILED(hr = IUser_RequestXstsToken( iface )))
+    /* Loading the profile only requires user claims. Acquire device/title claims
+     * lazily in user_ensure_xsts_for_url(), when a service actually needs them. */
+    if (FAILED(hr = user_request_xsts_token( impl, "http://xboxlive.com", FALSE )))
     {
         WARN( "Xbox XSTS exchange failed, hr %#lx.\n", hr );
         goto cleanup;
@@ -1628,27 +1667,84 @@ cleanup:
     return hr;
 }
 
-static HRESULT LoadMsaUser( const char *access_token, XUserHandle *user )
+/* Games may add the default user several times during startup, even closing the
+ * previous handle first. Coalesce those exchanges for a short, fixed interval.
+ * Every caller must still obtain a fresh response from Xodus for the same MSA
+ * app: the confirmed account ID prevents reuse after sign-out/account changes. */
+static SRWLOCK msa_user_lock = SRWLOCK_INIT;
+static XUserHandle msa_user;
+static char *msa_user_puid;
+static ULONGLONG msa_user_loaded, msa_user_expires;
+
+static void clear_msa_user(void)
 {
-    XUserHandle impl;
+    AcquireSRWLockExclusive( &msa_user_lock );
+    if (msa_user) IUser_Release( &msa_user->IUser_iface );
+    msa_user = NULL;
+    free( msa_user_puid );
+    msa_user_puid = NULL;
+    ReleaseSRWLockExclusive( &msa_user_lock );
+}
+
+static HRESULT LoadMsaUser( const char *access_token, const char *puid, const char *device_rps, XUserHandle *user )
+{
+    XUserHandle impl = NULL;
+    HSTRING credential = NULL;
+    FILETIME now;
+    ULONGLONG current_time;
     HRESULT hr;
 
     TRACE( "user %p.\n", user );
 
     if (!access_token) return E_INVALIDARG;
-    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+    *user = NULL;
+    if (FAILED(hr = MultiByteToHSTRING( access_token, strlen( access_token ), &credential ))) return hr;
+    AcquireSRWLockExclusive( &msa_user_lock );
+    GetSystemTimeAsFileTime( &now );
+    current_time = ((ULONGLONG)now.dwHighDateTime << 32) | now.dwLowDateTime;
+    if (msa_user && GetTickCount64() - msa_user_loaded < 60000 &&
+        current_time + 600000000 < msa_user_expires &&
+        puid && *puid && msa_user_puid && !strcmp( puid, msa_user_puid ))
+    {
+        TRACE( "Reusing the authenticated default user during startup.\n" );
+        IUser_AddRef( &msa_user->IUser_iface );
+        *user = msa_user;
+        hr = S_OK;
+        goto done;
+    }
+    if (msa_user) IUser_Release( &msa_user->IUser_iface );
+    msa_user = NULL;
+    free( msa_user_puid );
+    msa_user_puid = NULL;
+    if (!(impl = calloc( 1, sizeof(*impl) )))
+    {
+        hr = E_OUTOFMEMORY;
+        goto done;
+    }
     impl->IUser_iface.lpVtbl = &user_vtbl;
     impl->ref = 1;
-
-    if (FAILED(hr = MultiByteToHSTRING( access_token, strlen( access_token ), &impl->accessToken )))
-        goto error;
-    if (FAILED(hr = finish_user_load( impl ))) goto error;
-
-    *user = impl;
-    return S_OK;
-
-error:
-    IUser_Release( &impl->IUser_iface );
+    impl->accessToken = credential;
+    credential = NULL;
+    if (device_rps && *device_rps && FAILED(hr = MultiByteToHSTRING( device_rps, strlen( device_rps ), &impl->deviceRps )))
+    {
+        IUser_Release( &impl->IUser_iface );
+        goto done;
+    }
+    if (SUCCEEDED(hr = finish_user_load( impl )))
+    {
+        if (puid && *puid && (msa_user_puid = strdup( puid )))
+        {
+            msa_user = impl;
+            msa_user_loaded = GetTickCount64();
+            msa_user_expires = impl->xstsExpiry;
+            IUser_AddRef( &impl->IUser_iface );
+        }
+        *user = impl;
+    }
+    else IUser_Release( &impl->IUser_iface );
+done:
+    ReleaseSRWLockExclusive( &msa_user_lock );
+    WindowsDeleteString( credential );
     return hr;
 }
 
@@ -1818,7 +1914,7 @@ static HRESULT WINAPI XUserAddProvider( XAsyncOp op, const XAsyncProviderData *d
             {
                 IAsyncOperation_IMsaTokenResponse *operation = NULL;
                 IMsaTokenResponse *response = NULL;
-                const char *access_token = NULL;
+                const char *access_token = NULL, *puid = NULL, *device_rps = NULL;
                 DWORD async;
 
                 if (xodusAvailable && (context->options & XUserAddOptions_AddDefaultUserSilently ||
@@ -1842,14 +1938,21 @@ static HRESULT WINAPI XUserAddProvider( XAsyncOp op, const XAsyncProviderData *d
                         WARN( "Xodus MSA operation failed, hr %#lx.\n", hr );
                     else if (FAILED(hr = IMsaTokenResponse_get_Token( response, &access_token )))
                         WARN( "Xodus MSA result failed, hr %#lx.\n", hr );
-                    else if (FAILED(hr = LoadMsaUser( access_token, &context->user )))
+                    else if (FAILED(hr = IMsaTokenResponse_get_Puid( response, &puid )))
+                        WARN( "Xodus account ID request failed, hr %#lx.\n", hr );
+                    else if (FAILED(hr = IMsaTokenResponse_get_DeviceRps( response, &device_rps )))
+                        WARN( "Xodus device credential request failed, hr %#lx.\n", hr );
+                    else if (FAILED(hr = LoadMsaUser( access_token, puid, device_rps, &context->user )))
                         WARN( "Xodus user initialization failed, hr %#lx.\n", hr );
 
                     free( (void *)access_token );
+                    free( (void *)puid );
+                    free( (void *)device_rps );
                     if (response) IMsaTokenResponse_Release( response );
                     if (operation) IAsyncOperation_IMsaTokenResponse_Release( operation );
                     if (SUCCEEDED(hr)) goto complete;
                 }
+                clear_msa_user();
             }
 #endif
             /* OrionBE: Minecraft often uses AddDefaultUserAllowingUI; if Xodus MSA fails
@@ -2175,6 +2278,37 @@ struct XUserGetTokenAndSignatureContext
     };
 };
 
+static HRESULT user_parse_token_url( const char *url, URL_COMPONENTSA *components, char **http_url )
+{
+    const char *scheme = NULL, *suffix = NULL;
+
+    *http_url = NULL;
+    /* A WebSocket authenticates its HTTP upgrade request. XSAPI passes the
+     * original ws/wss URI, including for the Xbox RTA connection. */
+    if (!strnicmp( url, "wss://", 6 ))
+    {
+        scheme = "https";
+        suffix = url + 3;
+    }
+    else if (!strnicmp( url, "ws://", 5 ))
+    {
+        scheme = "http";
+        suffix = url + 2;
+    }
+    if (scheme)
+    {
+        if (!(*http_url = malloc( strlen(scheme) + strlen(suffix) + 1 ))) return E_OUTOFMEMORY;
+        strcpy( *http_url, scheme );
+        strcat( *http_url, suffix );
+        url = *http_url;
+    }
+    if (!InternetCrackUrlA( url, 0, 0, components )) return HRESULT_FROM_WIN32( GetLastError() );
+    if (!components->dwHostNameLength ||
+        (components->nScheme != INTERNET_SCHEME_HTTP && components->nScheme != INTERNET_SCHEME_HTTPS))
+        return E_INVALIDARG;
+    return S_OK;
+}
+
 static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsyncProviderData *data )
 {
     URL_COMPONENTSA uc = { .dwStructSize = sizeof(URL_COMPONENTSA), .dwHostNameLength = -1,
@@ -2190,9 +2324,8 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
     BYTE rawSignature[76] = {}; /* 4 byte version, 8 byte filetime, 64 byte signature */
     WCHAR *wAuth, *wSignature;
     FILETIME timestamp;
-    char *buf = NULL;
-    BOOL xstsLocked = FALSE, uninitialize = FALSE, refresh;
-    time_t now;
+    char *buf = NULL, *http_url = NULL;
+    BOOL xstsLocked = FALSE, uninitialize = FALSE;
     HRESULT hr;
 
     if (FAILED(hr = QueryApiImpl( &CLSID_XThreadingImpl, &IID_IXThreadingImpl, (void **)&xthreading ))) return hr;
@@ -2243,21 +2376,13 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
             hr = RoInitialize( RO_INIT_MULTITHREADED );
             if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) goto cleanup;
             uninitialize = SUCCEEDED(hr);
-            if (!InternetCrackUrlA( context->url, 0, 0, &uc )) goto error;
-            if (!uc.dwHostNameLength || (uc.nScheme != INTERNET_SCHEME_HTTP && uc.nScheme != INTERNET_SCHEME_HTTPS))
-            {
-                hr = E_INVALIDARG;
-                goto cleanup;
-            }
+            if (FAILED(hr = user_parse_token_url( context->url, &uc, &http_url ))) goto cleanup;
             pathAndQueryLen = uc.dwUrlPathLength + uc.dwExtraInfoLength;
             relyingParty = user_GetRelyingParty( context->user, &uc );
             AcquireSRWLockExclusive( &context->user->xstsLock );
             xstsLocked = TRUE;
             if (FAILED(hr = user_ensure_xsts_for_url( context->user, &uc, relyingParty ))) goto cleanup;
             TRACE( "Using XSTS relying party %s for %s.\n", debugstr_a( relyingParty ), debugstr_a( context->url ) );
-            /* Heartbeat only on titles/current — token is already title-claim XSTS. */
-            if (context->url && strstr( context->url, "titles/current" ))
-                user_publish_presence_online( context->user );
             wUserHash = WindowsGetStringRawBuffer( context->user->userHash, &wUserHashLen );
             wToken = WindowsGetStringRawBuffer( context->user->xstsToken, &wTokenLen );
             if (!(userHashLen = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wUserHash, wUserHashLen, NULL, 0, NULL, NULL ))) goto error;
@@ -2315,43 +2440,10 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
             memcpy( ptr, context->headers, context->headersSize );
             ptr += context->headersSize;
 
-            /*
-             * Bedrock signs+posts activity JSON without title id → Xbox Forbidden.
-             * Rewrite the signed copy to {"id":"1739947436","state":"active"} padded to
-             * the original size; winhttp must send the same bytes (see request.c).
-             */
-            if (context->url && strstr( context->url, "/titles/current" ) &&
-                context->bodyBuffer && context->bodySize >= 36 && context->bodySize < 512 &&
-                !(context->bodySize >= 6 && !memcmp( context->bodyBuffer, "{\"id\":", 6 )))
-            {
-                char rewrite[512];
-                DWORD need = (DWORD)snprintf( rewrite, sizeof(rewrite),
-                                             "{\"id\":\"1739947436\",\"state\":\"active\"}" );
-                if (need && need < context->bodySize)
-                {
-                    memset( rewrite + need, ' ', context->bodySize - need );
-                    memcpy( context->bodyBuffer, rewrite, context->bodySize );
-                    TRACE( "rewrote titles/current signed body to %zu bytes.\n", context->bodySize );
-                }
-            }
-
             /* body */
             memcpy( ptr, context->bodyBuffer, min( context->bodySize, 0x2000 ) );
 
-            if (context->url && strstr( context->url, "userpresence" ) && context->bodySize)
-            {
-                FILE *df = fopen( "/home/perfect/OrionBE/logs/presence-dump.txt", "a" );
-                if (df)
-                {
-                    fprintf( df, "URL %s bodySize %zu\n", context->url, (size_t)context->bodySize );
-                    fwrite( context->bodyBuffer, 1, context->bodySize, df );
-                    fputc( '\n', df );
-                    fclose( df );
-                }
-            }
-
-            TRACE( "buf: %s\n", debugstr_an( (char *)buf, bufLen ) );
-            TRACE( "rawSignature: %s\n", debugstr_an( (char *)rawSignature, 76 ) );
+            TRACE( "Signing %llu bytes.\n", bufLen );
 
             if (FAILED(hr = IUser_SignData( &context->user->IUser_iface, bufLen, (UCHAR *)buf, 64, rawSignature + 12 ))) goto cleanup;
 
@@ -2404,6 +2496,7 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
             hr = HRESULT_FROM_WIN32( GetLastError() );
         cleanup:
             if (xstsLocked) ReleaseSRWLockExclusive( &context->user->xstsLock );
+            free( http_url );
             if (buf) free( buf );
             if (FAILED(hr))
             {

@@ -75,12 +75,14 @@ frontends, including controls arriving inside a split ANSI sequence. This is
 not a complete implementation of every VT extension.
 
 Applications must retain `ENABLE_PROCESSED_OUTPUT` when enabling VT, and retain
-`ENABLE_WRAP_AT_EOL_OUTPUT` if they want automatic wrapping. `GetConsoleMode`
-requires a readable handle: code redirecting stdout with `freopen("CONOUT$",
-"w", stdout)` cannot assume that querying its mode succeeds. Amethyst Runtime
-2.2.1 and Proxy 1.2.0 have this initialization bug; their console setup needs a
-readable output handle (for example `"w+"`), a checked mode query, and initialized
-mode flags. Wine continues to honor explicitly requested literal output modes.
+`ENABLE_WRAP_AT_EOL_OUTPUT` if they want automatic wrapping. Wine's UCRT now
+matches the Microsoft runtime when redirecting streams in GUI applications:
+`freopen` and descriptor closure preserve the Win32 standard handles. Previously
+Wine replaced the readable console handle with a write-only handle, breaking
+Amethyst Proxy 1.2.0's console mode query. Console applications still update the
+standard handles. Applications should check `GetConsoleMode` for failure and
+initialize mode flags; querying a write-only handle is unsupported. Wine
+continues to honor explicitly requested literal output modes.
 
 ## Automatic package setup
 

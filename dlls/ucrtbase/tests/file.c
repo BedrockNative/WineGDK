@@ -31,6 +31,55 @@
 #include <winnls.h>
 #include "wine/test.h"
 
+static void test_std_handle_app_type(void)
+{
+    void (CDECL *set_app_type)(int);
+    HANDLE original, sentinel, after_open, after_close, fd_handle;
+    int type, saved_fd, close_ret;
+    FILE *file;
+
+    set_app_type = (void *)GetProcAddress(GetModuleHandleA("ucrtbase.dll"), "_set_app_type");
+    original = GetStdHandle(STD_OUTPUT_HANDLE);
+    saved_fd = _dup(STDOUT_FILENO);
+    ok(saved_fd != -1, "_dup failed\n");
+    if (saved_fd == -1) return;
+    sentinel = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           NULL, OPEN_EXISTING, 0, NULL);
+    ok(sentinel != INVALID_HANDLE_VALUE, "CreateFile failed, error %lu\n", GetLastError());
+    if (sentinel == INVALID_HANDLE_VALUE)
+    {
+        _close(saved_fd);
+        return;
+    }
+
+    for (type = 0; type <= 2; ++type)
+    {
+        fflush(stdout);
+        set_app_type(type);
+        SetStdHandle(STD_OUTPUT_HANDLE, sentinel);
+        file = freopen("std_handle_app_type.tmp", "w", stdout);
+        fd_handle = (HANDLE)_get_osfhandle(STDOUT_FILENO);
+        after_open = GetStdHandle(STD_OUTPUT_HANDLE);
+        close_ret = _close(STDOUT_FILENO);
+        after_close = GetStdHandle(STD_OUTPUT_HANDLE);
+
+        /* Restore stdout before reporting failures. */
+        set_app_type(1);
+        _dup2(saved_fd, STDOUT_FILENO);
+        SetStdHandle(STD_OUTPUT_HANDLE, original);
+        ok(file != NULL, "type %d: freopen failed\n", type);
+        ok(!close_ret, "type %d: _close failed\n", type);
+        ok(after_open == (type == 1 ? fd_handle : sentinel),
+           "type %d: unexpected standard handle %p (fd %p, sentinel %p)\n",
+           type, after_open, fd_handle, sentinel);
+        ok(after_close == (type == 1 ? NULL : sentinel),
+           "type %d: unexpected closed standard handle %p\n", type, after_close);
+    }
+    _close(saved_fd);
+    CloseHandle(sentinel);
+    DeleteFileA("std_handle_app_type.tmp");
+}
+
 static void test_std_stream_buffering(void)
 {
     int dup_fd, ret, pos;
@@ -486,6 +535,7 @@ START_TEST(file)
         return;
     }
 
+    test_std_handle_app_type();
     test_std_stream_buffering();
     test_iobuf_layout();
     test_std_stream_open();
