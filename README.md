@@ -2,6 +2,12 @@
 
 Microsoft Services is WIP.
 
+Set `XODUS_SOCK_NAME` to override the default `xodus.sock` filename under
+`$XDG_RUNTIME_DIR` on Linux (`/tmp` on macOS). For example,
+`XODUS_SOCK_NAME=my-xodus.sock ./build/bin/wine game.exe` connects to
+`$XDG_RUNTIME_DIR/my-xodus.sock`. An unset or empty value uses `xodus.sock`.
+The existing `XODUS_SOCKET` full-path override takes precedence when nonempty.
+
 As of [3414250](https://github.com/Weather-OS/WineGDK/commit/341425050f4f9b968b807dbd61942dabca8f6af1), Online functionality has been implemented. To get it working, resort to [GDK-Proton](https://github.com/Weather-OS/GDK-Proton)
 
 ### NOTES ABOUT THIS PROJECT
@@ -33,6 +39,11 @@ LICENSE for the details.
 
 
 ## QUICK START
+
+To configure, build, and install both x86_64 and i386 into `./build` with
+tests disabled, run `./build.sh`. The script uses `make -j"$(nproc)"` and
+resolves the installation path from its own location, so it can be rerun
+after moving the source directory.
 
 From the top-level directory of the Wine source (which contains this file),
 run:

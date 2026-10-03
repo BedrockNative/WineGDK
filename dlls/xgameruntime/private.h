@@ -108,7 +108,6 @@ extern "C" {
 /* OrionBE: 5 s was shorter than a slow DNS lookup (login.live.com) and made the game crash; allow up to 60 s. */
 #define IPC_REQUEST_TIMEOUT_MS 60000
 #define XODUS_INTEROP 1
-#endif
 
 extern BOOLEAN initializeCalled;
 extern BOOLEAN xodusAvailable;

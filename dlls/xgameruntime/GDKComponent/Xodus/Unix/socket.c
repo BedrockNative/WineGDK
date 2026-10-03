@@ -150,9 +150,19 @@ static NTSTATUS conn_sock( void *args )
         const char *runtime = "/tmp";
 #endif
 
+        override = getenv( "XODUS_SOCK_NAME" );
+        if (override && override[0]) socket_suffix = override;
+
         len = strlen( runtime ) + strlen( socket_suffix ) + 2;
         if (!(socket_path = malloc( len ))) return STATUS_NO_MEMORY;
         snprintf( socket_path, len, "%s/%s", runtime, socket_suffix );
+    }
+
+    if (len > sizeof(addr.sun_path))
+    {
+        WARN( "Xodus socket path is too long: %s.\n", socket_path );
+        free( socket_path );
+        return STATUS_NAME_TOO_LONG;
     }
 
     sockfd = socket( AF_UNIX, SOCK_STREAM, 0 );

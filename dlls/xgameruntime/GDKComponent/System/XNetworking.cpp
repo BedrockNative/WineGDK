@@ -424,25 +424,6 @@ public:
         return S_OK;
     }
 
-    HRESULT WINAPI XNetworkingQueryConfigurationSetting(XNetworkingConfigurationSetting setting, UINT64 *value) override
-    {
-        if (!value) return E_POINTER;
-        *value = 0;
-        return E_NOTIMPL;
-    }
-
-    HRESULT WINAPI XNetworkingSetConfigurationSetting(XNetworkingConfigurationSetting setting, UINT64 value) override
-    {
-        return E_NOTIMPL;
-    }
-
-    HRESULT WINAPI XNetworkingQueryStatistics(XNetworkingStatisticsType type, XNetworkingStatisticsBuffer *buffer) override
-    {
-        if (!buffer) return E_POINTER;
-        memset(buffer, 0, sizeof(*buffer));
-        return E_NOTIMPL;
-    }
-
 private:
     std::atomic_long ref{ 1 };
 };
