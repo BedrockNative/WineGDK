@@ -320,7 +320,7 @@ public:
         FILETIME itemCreatedTime;
         HRESULT hr;
         HSTRING itemPath = NULL;
-        HANDLE itemHandle;
+        HANDLE itemHandle = INVALID_HANDLE_VALUE;
 
         TRACE( "iface %p, created %p.\n", this, created );
 
@@ -566,7 +566,6 @@ _CLEANUP:
     IShellItem *item;
     BOOLEAN canBeModified;
 };
-
 
 class StorageFolderImpl final
     : public IActivationFactory

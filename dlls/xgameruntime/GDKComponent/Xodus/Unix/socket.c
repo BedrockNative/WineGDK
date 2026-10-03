@@ -23,7 +23,9 @@
 #pragma makedep unix
 #endif
 
+#ifndef WINE_UNIX_LIB
 #define WINE_UNIX_LIB
+#endif
 
 #include "ntstatus.h"
 #include "windef.h"
@@ -107,7 +109,7 @@
 WINE_DEFAULT_DEBUG_CHANNEL(xodus);
 
 // Persist connection
-static int sockfd = 0;
+static int sockfd = -1;
 
 typedef struct _POLL_SOCKET_ARGS
 {
@@ -117,7 +119,7 @@ typedef struct _POLL_SOCKET_ARGS
 
 typedef struct _IPCFrame
 {
-    SIZE_T frameSize;
+    UINT32 frameSize;
     BYTE* frame;
 } IPCFrame;
 
@@ -157,12 +159,12 @@ static NTSTATUS conn_sock( void *args )
     if (sockfd < 0)
     {
         free( socket_path );
-        return STATUS_ABANDONED;
+        return STATUS_UNSUCCESSFUL;
     }
 
     memset( &addr, 0, sizeof(addr) );
     addr.sun_family = AF_UNIX;
-    lstrcpynA( addr.sun_path, socket_path, sizeof(addr.sun_path) );
+    memcpy( addr.sun_path, socket_path, len );
 
     if (connect( sockfd, (struct sockaddr *)&addr, sizeof(addr) ) < 0)
     {
@@ -174,6 +176,12 @@ static NTSTATUS conn_sock( void *args )
         return STATUS_CONNECTION_REFUSED;
     }
 
+#ifdef SO_NOSIGPIPE
+    {
+        int enabled = 1;
+        setsockopt( sockfd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled) );
+    }
+#endif
     free( socket_path );
     return STATUS_SUCCESS;
 }
@@ -188,8 +196,8 @@ static NTSTATUS poll_sock( void *args )
 
     TRACE( "args %p\n", args );
 
-    if ( !sockfd )
-        return STATUS_CONNECTION_INVALID;
+    if (sockfd < 0) return STATUS_CONNECTION_INVALID;
+    if (socket_args->curr_buffer_size >= POLL_BUFFER_SIZE) return STATUS_BUFFER_TOO_SMALL;
 
     fds[0].fd = sockfd;
     fds[0].events = POLLIN;
@@ -203,12 +211,17 @@ static NTSTATUS poll_sock( void *args )
 
     if ( fds[0].revents & POLLIN ) 
     {
-        n = read( sockfd, socket_args->curr_buffer + socket_args->curr_buffer_size, POLL_BUFFER_SIZE - socket_args->curr_buffer_size );
+        do
+            n = read( sockfd, socket_args->curr_buffer + socket_args->curr_buffer_size,
+                      POLL_BUFFER_SIZE - socket_args->curr_buffer_size );
+        while (n < 0 && errno == EINTR);
         if ( n <= 0 ) 
             return STATUS_CONNECTION_DISCONNECTED;
 
         socket_args->curr_buffer_size += n;
     }
+    else if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL))
+        return STATUS_CONNECTION_DISCONNECTED;
 
     return STATUS_SUCCESS;
 }
@@ -220,18 +233,18 @@ static NTSTATUS send_frm( void *args )
 
     TRACE( "args %p\n", args );
 
-    UINT32 magic = *(UINT32 *)frame->frame;
-    UINT16 type  = *(UINT16 *)(frame->frame + sizeof(UINT32));
-    UINT16 len   = *(UINT16 *)(frame->frame + sizeof(UINT32) + sizeof(UINT16));
-    BYTE* body  = frame->frame + 8;
-    TRACE("magic is %#x\n", magic);
-    TRACE("type is %d\n", type);
-    TRACE("len is %d\n", len);
-    TRACE("body is %s\n", debugstr_an(body, len));
+    if (sockfd < 0) return STATUS_CONNECTION_INVALID;
+    if (!frame || !frame->frame || frame->frameSize < 8 || frame->frameSize > 0xffff + 8)
+        return STATUS_INVALID_PARAMETER;
 
     while ( sent < frame->frameSize )
     {
-        ssize_t n = write( sockfd, (char *)frame->frame + sent, frame->frameSize - sent );
+        ssize_t n;
+#ifdef MSG_NOSIGNAL
+        n = send( sockfd, (char *)frame->frame + sent, frame->frameSize - sent, MSG_NOSIGNAL );
+#else
+        n = send( sockfd, (char *)frame->frame + sent, frame->frameSize - sent, 0 );
+#endif
 
         if ( n < 0 )
         {
@@ -240,6 +253,7 @@ static NTSTATUS send_frm( void *args )
             return STATUS_CONNECTION_RESET;
         }
 
+        if (!n) return STATUS_CONNECTION_RESET;
         sent += n;
     }
 

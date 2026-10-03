@@ -21,12 +21,12 @@
 
 #include <atomic>
 #include <mutex>
+#include <new>
 
 #include "IWineAsync.hpp"
 
 WINE_DEFAULT_DEBUG_CHANNEL(wineasync);
 
-#define Closed 4
 #define HANDLER_NOT_SET ((void *)~(ULONG_PTR)0)
 
 HRESULT WINAPI
@@ -77,7 +77,9 @@ AsyncInfo::Release() noexcept
     {
         if ( handler && handler != HANDLER_NOT_SET )
             handler->Release();
-        Close();
+        if (async_run_work) CloseThreadpoolWork( async_run_work );
+        PropVariantClear( &result );
+        if (errorInfo) errorInfo->Release();
 
         if ( invoker ) invoker->Release();
 
@@ -113,7 +115,7 @@ HRESULT WINAPI
 AsyncInfo::GetRuntimeClassName( HSTRING *class_name ) noexcept
 {
     TRACE( "iface %p, class_name %p\n", this, class_name );
-    return WindowsCreateString( (LPCWSTR)L"Windows.Storage.WineAsyncInfoImpl", 34, class_name );
+    return WindowsCreateString( (LPCWSTR)L"Windows.Storage.WineAsyncInfoImpl", 33, class_name );
 }
 
 HRESULT WINAPI
@@ -127,33 +129,31 @@ AsyncInfo::GetTrustLevel( TrustLevel *trust_level ) noexcept
 HRESULT WINAPI
 AsyncInfo::put_Completed( IWineAsyncOperationCompletedHandler *handler ) noexcept
 {
-    TRACE( "iface %p, handler %p.\n", this, handler );
+    IInspectable *operation = nullptr;
+    AsyncStatus completedStatus = Started;
 
+    TRACE( "iface %p, handler %p.\n", this, handler );
+    if (!handler) return E_POINTER;
     {
         const std::lock_guard<std::mutex> lock( mutex );
-
-        if ( status == Closed )
-            return E_ILLEGAL_METHOD_CALL;
-
-        if ( this->handler != HANDLER_NOT_SET )
-            return E_ILLEGAL_DELEGATE_ASSIGNMENT;
-
+        if (closed) return E_ILLEGAL_METHOD_CALL;
+        if (this->handler != HANDLER_NOT_SET) return E_ILLEGAL_DELEGATE_ASSIGNMENT;
         this->handler = handler;
-        this->handler->AddRef();
-
-        if ( status > Started )
+        handler->AddRef();
+        if (status != Started)
         {
-            IInspectable *operation = IInspectable_outer;
-            AsyncStatus status = this->status;
-            this->handler = NULL; /* Prevent concurrent invoke. */
-
-            handler->Invoke( operation, status );
-            handler->Release();
-
-            return S_OK;
+            operation = IInspectable_outer;
+            operation->AddRef();
+            completedStatus = status;
+            this->handler = nullptr;
         }
     }
-
+    if (operation)
+    {
+        handler->Invoke( operation, completedStatus );
+        handler->Release();
+        operation->Release();
+    }
     return S_OK;
 }
 
@@ -162,10 +162,12 @@ AsyncInfo::get_Completed( IWineAsyncOperationCompletedHandler **handler ) noexce
 {
     TRACE( "iface %p, handler %p.\n", this, handler );
 
+    if (!handler) return E_POINTER;
+
     {
         const std::lock_guard<std::mutex> lock( mutex );
 
-        if ( status == Closed )
+        if ( closed )
             return E_ILLEGAL_METHOD_CALL;
 
         if (this->handler == NULL || this->handler == HANDLER_NOT_SET )
@@ -184,20 +186,17 @@ HRESULT WINAPI
 AsyncInfo::get_Result( PROPVARIANT *result ) noexcept
 {
     TRACE( "iface %p, result %p.\n", this, result );
-
+    if (!result) return E_POINTER;
+    PropVariantInit( result );
+    const std::lock_guard<std::mutex> lock( mutex );
+    if (status == Started || closed) return E_ILLEGAL_METHOD_CALL;
+    if (status == Canceled) return E_ABORT;
+    if (status == Error)
     {
-        const std::lock_guard<std::mutex> lock( mutex );
-
-        if ( status == Completed || status == Error )
-        {
-            PropVariantCopy( result, &this->result );
-        }
-        // This is where we resubmit the IRestrictedErrorInfo that we received upon AsyncStatus::Error
-        if ( this->status == Error && errorInfo )
-            SetErrorInfo( 0, errorInfo );
+        if (errorInfo) SetErrorInfo( 0, errorInfo );
+        return hr;
     }
-
-    return hr;
+    return PropVariantCopy( result, &this->result );
 }
 
 HRESULT WINAPI
@@ -217,10 +216,12 @@ AsyncInfo::get_Id( UINT32 *id ) noexcept
 {
     TRACE( "iface %p, id %p.\n", this, id );
 
+    if (!id) return E_POINTER;
+
     {
         const std::lock_guard<std::mutex> lock( mutex );
 
-        if ( status == Closed )
+        if ( closed )
             return E_ILLEGAL_METHOD_CALL;
         *id = 1;
     }
@@ -233,10 +234,12 @@ AsyncInfo::get_Status( AsyncStatus *status ) noexcept
 {
     TRACE( "iface %p, status %p.\n", this, status );
 
+    if (!status) return E_POINTER;
+
     {
         const std::lock_guard<std::mutex> lock( mutex );
 
-        if ( this->status == Closed )
+        if ( closed )
             return E_ILLEGAL_METHOD_CALL;
         *status = this->status;
     }
@@ -249,10 +252,12 @@ AsyncInfo::get_ErrorCode( HRESULT *error_code ) noexcept
 {
     TRACE( "iface %p, error_code %p.\n", this, error_code );
 
+    if (!error_code) return E_POINTER;
+
     {
         const std::lock_guard<std::mutex> lock( mutex );
 
-        if ( status == Closed )
+        if ( closed )
             return *error_code = E_ILLEGAL_METHOD_CALL;
         *error_code = hr;
     }
@@ -268,7 +273,7 @@ AsyncInfo::Cancel() noexcept
     {
         const std::lock_guard<std::mutex> lock( mutex );
 
-        if ( status == Closed )
+        if ( closed )
             return E_ILLEGAL_METHOD_CALL;
 
         if ( status == Started ) status = Canceled;
@@ -288,11 +293,11 @@ AsyncInfo::Close() noexcept
         if ( status == Started )
             return E_ILLEGAL_STATE_CHANGE;
 
-        if ( status != Closed )
+        if ( !closed )
         {
             CloseThreadpoolWork( async_run_work );
             async_run_work = NULL;
-            status = static_cast<AsyncStatus>(Closed);
+            closed = true;
         }
     }
 
@@ -304,8 +309,13 @@ HRESULT WINAPI
 AsyncInfo::Create( IUnknown *invoker, PVOID param, async_operation_callback callback,
                                   IInspectable *outer, IWineAsyncInfoImpl **out ) noexcept
 {
-    AsyncInfo *impl = new AsyncInfo();
+    AsyncInfo *impl;
     HRESULT hr;
+
+    if (!out) return E_POINTER;
+    *out = nullptr;
+    if (!outer || !callback) return E_INVALIDARG;
+    if (!(impl = new (std::nothrow) AsyncInfo())) return E_OUTOFMEMORY;
 
     impl->IInspectable_outer = outer;
     impl->callback = callback;
@@ -329,43 +339,42 @@ AsyncInfo::Create( IUnknown *invoker, PVOID param, async_operation_callback call
 void CALLBACK
 AsyncInfo::async_info_callback( TP_CALLBACK_INSTANCE *instance, void *iface, TP_WORK *work )
 {
-    HRESULT hr;
-    AsyncInfo *impl = static_cast<AsyncInfo *>( iface );
-    PROPVARIANT result;
+    AsyncInfo *impl = static_cast<AsyncInfo *>(iface);
+    PROPVARIANT result{};
     IInspectable *operation = impl->IInspectable_outer;
     IWineAsyncOperationCompletedHandler *handler = nullptr;
-    AsyncStatus status;
-
-    TRACE( "instace %p, iface %p, work %p\n", instance, iface, work );
-
-    hr = impl->callback( impl->invoker, impl->param, &result );
+    AsyncStatus status = Started;
+    bool invoke_handler = false;
+    HRESULT apartment_hr = RoInitialize( RO_INIT_MULTITHREADED );
+    HRESULT hr = impl->callback( impl->invoker, impl->param, &result );
 
     {
         const std::lock_guard<std::mutex> lock( impl->mutex );
-
-        if ( impl->status != Closed )
-            impl->status = FAILED(hr) ? Error : Completed;
-
-        if ( impl->status == Error )
-            GetErrorInfo(0, &impl->errorInfo);
-
-        PropVariantCopy( &impl->result, &result );
+        if (!impl->closed && impl->status == Started) impl->status = FAILED(hr) ? Error : Completed;
+        if (!impl->closed && impl->status == Error) GetErrorInfo( 0, &impl->errorInfo );
+        if (!impl->closed && impl->status == Completed)
+        {
+            impl->result = result;
+            PropVariantInit( &result );
+        }
         impl->hr = hr;
-
-        if ( impl->handler != nullptr && impl->handler != HANDLER_NOT_SET )
+        if (impl->handler && impl->handler != HANDLER_NOT_SET)
         {
             handler = impl->handler;
-            handler->AddRef();
             status = impl->status;
+            invoke_handler = !impl->closed;
             impl->handler = nullptr;
         }
     }
-
-    if ( handler )
+    PropVariantClear( &result );
+    if (handler)
     {
-        handler->Invoke( operation, status );
+        if (invoke_handler) handler->Invoke( operation, status );
         handler->Release();
     }
+    /* Balance the reference acquired by Start(), after the callback is finished. */
+    operation->Release();
+    if (SUCCEEDED(apartment_hr)) RoUninitialize();
 }
 
 template<typename T>
@@ -440,7 +449,7 @@ HRESULT WINAPI
 AsyncOperation<T>::GetRuntimeClassName( HSTRING *class_name ) noexcept
 {
     TRACE( "iface %p, class_name %p\n", this, class_name );
-    return WindowsCreateString( (LPCWSTR)L"Windows.Foundation.IAsyncAction`1<IInspectable>", 48, class_name );
+    return WindowsCreateString( (LPCWSTR)L"Windows.Foundation.IAsyncAction`1<IInspectable>", 47, class_name );
 }
 
 template<typename T>
@@ -474,18 +483,22 @@ template<typename T>
 HRESULT WINAPI
 AsyncOperation<T>::GetResults( T *results ) noexcept
 {
-    TRACE( "iface %p.\n", this );
-
-    PROPVARIANT result = {.vt = VT_NULL};
+    PROPVARIANT result{};
     HRESULT hr;
 
+    if (!results) return E_POINTER;
+    *results = nullptr;
     hr = info->get_Result( &result );
-
-    if ( result.vt == VT_UNKNOWN )
-        *results = static_cast<T>(result.punkVal);
-
+    if (SUCCEEDED(hr))
+    {
+        if (result.vt == VT_UNKNOWN)
+        {
+            *results = static_cast<T>(result.punkVal);
+            result.punkVal = nullptr;
+        }
+        else hr = E_UNEXPECTED;
+    }
     PropVariantClear( &result );
-
     return hr;
 }
 
@@ -494,13 +507,16 @@ HRESULT WINAPI
 AsyncOperation<T>::Create( IUnknown *invoker, PVOID param, async_operation_callback callback,
                             IAsyncOperation<T> **out )
 {
-    AsyncOperation<T> *impl = new AsyncOperation<T>();
+    AsyncOperation<T> *impl;
     HRESULT hr;
+
+    if (!out) return E_POINTER;
+    *out = nullptr;
+    if (!(impl = new (std::nothrow) AsyncOperation<T>())) return E_OUTOFMEMORY;
 
     if ( FAILED( hr = AsyncInfo::Create( invoker, param, callback, static_cast<IInspectable *>(impl), &impl->info ) ) ||
          FAILED( hr = impl->info->Start() ) )
     {
-        impl->info->Release();
         delete impl;
         return hr;
     }
@@ -581,7 +597,7 @@ HRESULT WINAPI
 AsyncAction::GetRuntimeClassName( HSTRING *class_name ) noexcept
 {
     TRACE( "iface %p, class_name %p\n", this, class_name );
-    return WindowsCreateString( (LPCWSTR)L"Windows.Foundation.IAsyncAction`1<IInspectable>", 48, class_name );
+    return WindowsCreateString( (LPCWSTR)L"Windows.Foundation.IAsyncAction`1<IInspectable>", 47, class_name );
 }
 
 HRESULT WINAPI
@@ -617,7 +633,7 @@ AsyncAction::GetResults() noexcept
     HRESULT hr;
 
     hr = info->get_Result( &result );
-
+    PropVariantClear( &result );
     return hr;
 }
 
@@ -626,13 +642,16 @@ HRESULT WINAPI
 AsyncAction::Create( IUnknown *invoker, PVOID param, async_operation_callback callback,
                                         IAsyncAction **out )
 {
-    AsyncAction *impl = new AsyncAction();
+    AsyncAction *impl;
     HRESULT hr;
+
+    if (!out) return E_POINTER;
+    *out = nullptr;
+    if (!(impl = new (std::nothrow) AsyncAction())) return E_OUTOFMEMORY;
 
     if ( FAILED( hr = AsyncInfo::Create( invoker, param, callback, static_cast<IInspectable *>(impl), &impl->info ) ) ||
          FAILED( hr = impl->info->Start() ) )
     {
-        impl->info->Release();
         delete impl;
         return hr;
     }

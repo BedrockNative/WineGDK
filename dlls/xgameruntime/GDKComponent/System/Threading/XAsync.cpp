@@ -906,7 +906,7 @@ HRESULT WINAPI XAsyncGetResult(
             }
 
             result = E_INVALIDARG;
-            TRACE(buf);
+            TRACE("%s", buf);
             assert(false);
             assert(sprintfResult > 0);
         }

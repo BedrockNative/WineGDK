@@ -99,10 +99,6 @@ public:
     MsaTokenResponse( const char *token ) : token(token) {};
     virtual ~MsaTokenResponse() = default;
 
-    MsaTokenResponse(
-        HSTRING token,
-        ABI::Windows::Foundation::DateTime expiry );
-
     MsaTokenResponse( const MsaTokenResponse& ) = delete;
     MsaTokenResponse& operator=( const MsaTokenResponse& ) = delete;
 
@@ -116,15 +112,14 @@ public:
     HRESULT WINAPI get_Expiry( ABI::Windows::Foundation::DateTime *out );
 
 private:
-    ABI::Windows::Foundation::DateTime Expiry;
-    HSTRING Token;
+    ABI::Windows::Foundation::DateTime Expiry{};
     std::atomic_long ref{ 1 };
     const char *token = NULL;
 };
 
 struct MsaTokenRequestContext
 {
-    const char *clientId;
+    char *clientId;
     boolean allowUi;
     boolean fullTrust;
 };

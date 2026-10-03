@@ -28,15 +28,22 @@ HRESULT http_request( const WCHAR *method, const WCHAR *hostName, const WCHAR *p
 {
     HINTERNET connection = NULL, request = NULL, session = NULL;
     DWORD size = sizeof( DWORD ), status;
+    UCHAR *new_buffer;
     HRESULT hr = S_OK;
 
+    if (!buffer || !bufferSize) return E_POINTER;
+    *buffer = NULL;
+    *bufferSize = 0;
+    if (!method || !hostName || !pathAndQuery) return E_INVALIDARG;
+    if (data && strlen( data ) > MAXDWORD) return E_INVALIDARG;
+
     TRACE( "method %s, hostName %s, pathAndQuery %s, data %s, headers %s, accept %p, buffer %p, bufferSize %p.\n",
-           debugstr_w( method ), debugstr_w( hostName ), debugstr_w( pathAndQuery ), debugstr_a( data ), debugstr_w( headers ), accept, buffer, bufferSize );
+           debugstr_w( method ), debugstr_w( hostName ), debugstr_w( pathAndQuery ), data ? "<request body>" : "(null)", headers ? "<headers>" : "(null)", accept, buffer, bufferSize );
 
     if (!(session = WinHttpOpen( USER_AGENT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0 ))) goto error;
     if (!(connection = WinHttpConnect( session, hostName, INTERNET_DEFAULT_HTTPS_PORT, 0 ))) goto error;
     if (!(request = WinHttpOpenRequest( connection, method, pathAndQuery, NULL, WINHTTP_NO_REFERER, accept, WINHTTP_FLAG_SECURE ))) goto error;
-    if (!WinHttpSendRequest( request, headers, -1, data, (data ? strlen( data ) : 0), (data ? strlen( data ) : 0), 0 )) goto error;
+    if (!WinHttpSendRequest( request, headers, headers ? -1 : 0, data, (data ? strlen( data ) : 0), (data ? strlen( data ) : 0), 0 )) goto error;
     if (!WinHttpReceiveResponse( request, NULL )) goto error;
     if (!WinHttpQueryHeaders( request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                               WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX )) goto error;
@@ -47,18 +54,22 @@ HRESULT http_request( const WCHAR *method, const WCHAR *hostName, const WCHAR *p
     }
 
     /* buffer response data */
-    *bufferSize = 0;
-    *buffer = NULL;
     do
     {
         if (!WinHttpQueryDataAvailable( request, &size )) goto error;
         if (!size) break;
-        if (!(*buffer = realloc( *buffer, *bufferSize + size )))
+        if (*bufferSize > ~(SIZE_T)0 - size)
+        {
+            hr = E_OUTOFMEMORY;
+            goto cleanup;
+        }
+        if (!(new_buffer = realloc( *buffer, *bufferSize + size )))
         {
             hr = E_OUTOFMEMORY;
             goto cleanup;
         }
 
+        *buffer = new_buffer;
         if (!WinHttpReadData( request, *buffer + *bufferSize, size, &size )) goto error;
         *bufferSize += size;
     }
@@ -68,8 +79,8 @@ HRESULT http_request( const WCHAR *method, const WCHAR *hostName, const WCHAR *p
 error:
     hr = HRESULT_FROM_WIN32( GetLastError() );
 cleanup:
-    if (connection) WinHttpCloseHandle( connection );
     if (request) WinHttpCloseHandle( request );
+    if (connection) WinHttpCloseHandle( connection );
     if (session) WinHttpCloseHandle( session );
     if (SUCCEEDED(hr)) return hr;
     if (*buffer) free( *buffer );
@@ -81,14 +92,16 @@ cleanup:
 #define encode_base64_(sfx,type,alph)                                                                                       \
 HRESULT encode_base64##sfx( const UINT32 dataSize, const BYTE *data, const UINT32 base64Size, type *base64, BOOLEAN pad )   \
 {                                                                                                                           \
-    UINT32 size = (dataSize * 8 + 5) / 6, rem = (size % 4) ? 4 - (size % 4) : 0;                                            \
+    UINT64 size = ((UINT64)dataSize * 8 + 5) / 6;                                                                       \
+    UINT32 rem = (size % 4) ? 4 - (size % 4) : 0;                                                                       \
     UINT32 div = dataSize / 3; /* 3 bytes of in, 4 chars out */                                                             \
-    const char alphabet[64] = alph;                                                                                         \
+    const char alphabet[] = alph;                                                                                       \
     const BYTE *cur = data;                                                                                                 \
     type *ptr = base64;                                                                                                     \
                                                                                                                             \
     TRACE( "dataSize %u, data %p, base64Size %u, base64 %p.\n", dataSize, data, base64Size, base64 );                       \
                                                                                                                             \
+    if ((dataSize && !data) || (base64Size && !base64)) return E_POINTER;                                               \
     size += pad ? rem : 0;                                                                                                  \
     if (size > base64Size) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );                                          \
                                                                                                                             \

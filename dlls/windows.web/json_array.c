@@ -43,6 +43,10 @@ static HRESULT WINAPI json_array_QueryInterface( IJsonArray *iface, REFIID iid, 
 
     TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
 
+    if (!out) return E_POINTER;
+    *out = NULL;
+    if (!iid) return E_INVALIDARG;
+
     if (IsEqualGUID( iid, &IID_IUnknown ) ||
         IsEqualGUID( iid, &IID_IInspectable ) ||
         IsEqualGUID( iid, &IID_IAgileObject ) ||
@@ -190,8 +194,15 @@ DEFINE_IINSPECTABLE( vector, IVector_IJsonValue, struct json_array, IJsonArray_i
 
 static HRESULT WINAPI vector_GetAt( IVector_IJsonValue *iface, UINT32 index, IJsonValue **value )
 {
-    FIXME( "iface %p, index %u, value %p stub!\n", iface, index, value );
-    return E_NOTIMPL;
+    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
+
+    TRACE( "iface %p, index %u, value %p.\n", iface, index, value );
+
+    if (!value) return E_INVALIDARG;
+    *value = NULL;
+    if (index >= impl->length) return E_BOUNDS;
+    IJsonValue_AddRef( *value = impl->elements[index] );
+    return S_OK;
 }
 
 static HRESULT WINAPI vector_get_Size( IVector_IJsonValue *iface, UINT32 *value )
@@ -239,10 +250,13 @@ static HRESULT WINAPI vector_Append( IVector_IJsonValue *iface, IJsonValue *valu
 
     TRACE( "iface %p, value %p.\n", iface, value );
 
+    if (!value) return E_INVALIDARG;
+
     if (impl->length == impl->capacity)
     {
-        UINT32 capacity = max( 32, impl->capacity * 3 / 2 );
+        UINT64 capacity = max( 32, (UINT64)impl->capacity * 3 / 2 );
         IJsonValue **new = impl->elements;
+        if (capacity > ~(UINT32)0 || capacity > ~(SIZE_T)0 / sizeof(*new)) return E_OUTOFMEMORY;
         if (!(new = realloc( new, capacity * sizeof(*new) ))) return E_OUTOFMEMORY;
         impl->elements = new;
         impl->capacity = capacity;

@@ -2,4 +2,5 @@ TESTDLL = xgameruntime.dll
 IMPORTS = user32 advapi32 combase
 
 SOURCES = \
-	xgameruntime.c
+	xgameruntime.c \
+	xuser.c

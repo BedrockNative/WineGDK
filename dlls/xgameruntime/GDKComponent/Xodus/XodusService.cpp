@@ -3,6 +3,7 @@
  *  Xodus Interopability Layer -> XodusService
  * 
  * Written by Weather
+ * Copyright 2026 Olivia Ryan
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -25,6 +26,7 @@
 
 #include "robuffer.h"
 #include <atomic>
+#include <new>
 
 WINE_DEFAULT_DEBUG_CHANNEL(xodus);
 
@@ -111,70 +113,108 @@ public:
     Ping( IAsyncAction **operation ) override
     {
         TRACE("operation %p.\n", operation);
+        if (!operation) return E_POINTER;
+        *operation = nullptr;
         return AsyncAction::Create( static_cast<IUnknown *>(this), nullptr, PingAsync, operation );
     }
 
     HRESULT WINAPI
     MsaTokenRequest( const char *clientId, boolean allowUi, boolean fullTrust, IAsyncOperation<IMsaTokenResponse *> **operation ) override
     {
-        auto ctx = new MsaTokenRequestContext( { clientId, allowUi, fullTrust } );
+        HRESULT hr;
+        MsaTokenRequestContext *ctx;
+
         TRACE( "clientId %s, operation %p.\n", debugstr_a( clientId ), operation );
-        return AsyncOperation<IMsaTokenResponse *>::Create( static_cast<IUnknown *>(this), ctx,
-                                                            MsaTokenRequestAsync, operation );
+        if (!operation) return E_POINTER;
+        *operation = nullptr;
+        if (!clientId) return E_INVALIDARG;
+        if (!(ctx = new (std::nothrow) MsaTokenRequestContext{})) return E_OUTOFMEMORY;
+        if (!(ctx->clientId = strdup( clientId )))
+        {
+            delete ctx;
+            return E_OUTOFMEMORY;
+        }
+        ctx->allowUi = allowUi;
+        ctx->fullTrust = fullTrust;
+        hr = AsyncOperation<IMsaTokenResponse *>::Create( static_cast<IUnknown *>(this), ctx,
+                                                         MsaTokenRequestAsync, operation );
+        if (FAILED(hr))
+        {
+            free( ctx->clientId );
+            delete ctx;
+        }
+        return hr;
     }
 
 private:
+
     static HRESULT WINAPI
     PingAsync( IUnknown *invoker, PVOID param, PROPVARIANT *result )
     {
         DWORD ret;
         UINT16 messageType;
         HRESULT status;
-        HSTRING bufferClass;
+        HSTRING bufferClass = nullptr;
 
         IXodusIPCPacket *xodusPacket = nullptr;
         IBuffer *message = nullptr;
         IBufferFactory *bufferFactory = nullptr;
-        IAsyncOperation<IXodusIPCPacket *> *response;
+        IAsyncOperation<IXodusIPCPacket *> *response = nullptr;
 
         TRACE("invoker %p, param %p, result %p\n", invoker, param, result);
 
         status = WindowsCreateString( RuntimeClass_Windows_Storage_Streams_Buffer, lstrlenW( RuntimeClass_Windows_Storage_Streams_Buffer ), &bufferClass );
-        if ( FAILED( status ) ) return status;
+        if ( FAILED( status ) ) goto _CLEANUP;
 
         status = RoGetActivationFactory( bufferClass, __uuidof( IBufferFactory ), (void **)&bufferFactory );
-        WindowsDeleteString( bufferClass );
-        if ( FAILED( status ) ) return status;
+        if ( FAILED( status ) ) goto _CLEANUP;
 
         status = bufferFactory->Create( 1, &message );
-        if ( FAILED( status ) ) return status;
+        if ( FAILED( status ) ) goto _CLEANUP;
 
         // Construct a new IPC Packet
-        xodusPacket = new XodusIPCPacket(
+        xodusPacket = new (std::nothrow) XodusIPCPacket(
             MagicHeaderType::XML,
             1 /* PING */,
             message
         );
 
-        xodus_ipclayer->SendRequestAsync( xodusPacket, &response );
+        if (!xodusPacket)
+        {
+            status = E_OUTOFMEMORY;
+            goto _CLEANUP;
+        }
+        status = xodus_ipclayer->SendRequestAsync( xodusPacket, &response );
+        if (FAILED(status)) goto _CLEANUP;
 
         ret = AsyncOperationCompletedHandler<IXodusIPCPacket *>::await_AsyncOperation( response, INFINITE );
         if ( ret )
-            return E_FAIL;
+        {
+            status = E_FAIL;
+            goto _CLEANUP;
+        }
 
         xodusPacket->Release();
+        xodusPacket = nullptr;
+
         message->Release();
+        message = nullptr;
 
         // confirm that we actually PONGed
         status = response->GetResults( &xodusPacket );
-        response->Release();
-        if ( FAILED( status ) ) return status;
-        xodusPacket->get_MessageType( &messageType );
-        xodusPacket->Release();
-        if ( messageType != 2 /* PONG */)
-            return E_INVALIDARG;
+        if (FAILED(status)) goto _CLEANUP;
+        status = xodusPacket->get_MessageType( &messageType );
+        if (SUCCEEDED(status) && messageType != 2 /* PONG */)
+            status = E_INVALIDARG;
         
-        return S_OK;
+_CLEANUP:
+        if ( bufferClass ) WindowsDeleteString( bufferClass );
+        if ( bufferFactory ) bufferFactory->Release();
+        if ( message ) message->Release();
+        if ( response ) response->Release();
+        if ( xodusPacket ) xodusPacket->Release();
+
+        return status;
     }
 
     static HRESULT WINAPI
@@ -186,8 +226,8 @@ private:
         auto ctx = static_cast<MsaTokenRequestContext *>(param);
         IAsyncOperation<IXodusIPCPacket *> *asyncop = nullptr;
         HSTRING_HEADER classNameHeader;
-        IMsaTokenResponse *token;
-        IBufferFactory *factory;
+        IMsaTokenResponse *token = nullptr;
+        IBufferFactory *factory = nullptr;
         UINT16 messageType = 3; /* MSA_TOKEN_REQUEST */
         char *xml = nullptr;
         HSTRING className;
@@ -196,9 +236,9 @@ private:
 
         if (FAILED(hr = WindowsCreateStringReference( RuntimeClass_Windows_Storage_Streams_Buffer,
                                                       wcslen( RuntimeClass_Windows_Storage_Streams_Buffer ),
-                                                      &classNameHeader, &className ))) return hr;
+                                                      &classNameHeader, &className ))) goto cleanup;
 
-        if (FAILED(hr = RoGetActivationFactory( className, __uuidof( IBufferFactory ), (void **)&factory ))) return hr;
+        if (FAILED(hr = RoGetActivationFactory( className, __uuidof( IBufferFactory ), (void **)&factory ))) goto cleanup;
         if (FAILED(hr = xodus_xml_builder->BuildMsaTokenRequestXml( ctx->clientId, ctx->allowUi, ctx->fullTrust, &xml ))) goto cleanup;
         if (FAILED(hr = factory->Create( strlen( xml ) + 1, &requestMessage ))) goto cleanup;
         if (FAILED(hr = requestMessage->QueryInterface<IBufferByteAccess>( &requestByteAccess ))) goto cleanup;
@@ -235,10 +275,10 @@ private:
             goto cleanup;
         }
 
-        responsePacket->get_Message( &responseMessage );
+        if (FAILED(hr = responsePacket->get_Message( &responseMessage ))) goto cleanup;
         if (FAILED(hr = responseMessage->QueryInterface<IBufferByteAccess>( &responseByteAccess ))) goto cleanup;
         if (FAILED(hr = responseByteAccess->Buffer( &buffer ))) goto cleanup;
-        xodus_xml_builder->FromMsaTokenResponseXml( reinterpret_cast<char *>(buffer), &token );
+        if (FAILED(hr = xodus_xml_builder->FromMsaTokenResponseXml( reinterpret_cast<char *>(buffer), &token ))) goto cleanup;
 
         result->vt = VT_UNKNOWN;
         result->punkVal = token;
@@ -252,7 +292,8 @@ private:
         if (requestPacket) requestPacket->Release();
         if (asyncop) asyncop->Release();
         if (xml) free( xml );
-        factory->Release();
+        if (factory) factory->Release();
+        free( ctx->clientId );
         delete ctx;
         return hr;
     }

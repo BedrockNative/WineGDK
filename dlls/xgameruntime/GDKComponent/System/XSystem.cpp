@@ -90,15 +90,14 @@ public:
 
         TRACE( "consoleIdSize %d, consoleId %p, consoleIdUsed %p\n", consoleIdSize, consoleId, consoleIdUsed );
 
-        if ( !consoleId || !consoleIdUsed )
-            return E_POINTER;
-
         if ( consoleIdSize < XSystemConsoleIdBytes )
             return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
 
-        lstrcpynA( consoleId, Id, consoleIdSize );
-
-        *consoleIdUsed = std::strlen( Id ) + 1;
+        if ( consoleIdUsed )
+            *consoleIdUsed = std::strlen( Id ) + 1;
+        if ( consoleId )
+            lstrcpynA( consoleId, Id, consoleIdSize );
+            
         return S_OK;
     }
 
@@ -109,14 +108,14 @@ public:
 
         TRACE( "sandboxIdSize %d, sandboxId %p, sandboxIdUsed %p\n", sandboxIdSize, sandboxId, sandboxIdUsed );
 
-        if ( !sandboxId )
-            return E_POINTER;
-
         if ( sandboxIdSize < XSystemXboxLiveSandboxIdMaxBytes )
             return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
 
-        lstrcpynA( sandboxId, Id, sandboxIdSize );
-        if ( sandboxIdUsed ) *sandboxIdUsed = std::strlen( Id ) + 1;
+        if ( sandboxIdUsed )
+            *sandboxIdUsed = std::strlen( Id ) + 1;
+        if ( sandboxId )
+            lstrcpynA( sandboxId, Id, sandboxIdSize );
+
         return S_OK;
     }
 

@@ -22,6 +22,7 @@
 #include "private.h"
 #include "util.h"
 #include <errno.h>
+#include <limits.h>
 #include <ntdef.h>
 #include <stdio.h>
 #include <time.h>
@@ -45,6 +46,11 @@ static HRESULT MultiByteToHSTRING( const char *str, UINT32 str_size, HSTRING *hs
     WCHAR *wstr;
     HRESULT hr;
 
+    if (!hstr || (str_size && !str)) return E_POINTER;
+    *hstr = NULL;
+    if (!str_size) return S_OK;
+    if (str_size > INT_MAX) return E_INVALIDARG;
+
     if (!(wstr_size = MultiByteToWideChar( CP_UTF8, MB_ERR_INVALID_CHARS, str, str_size, NULL, 0 )))
         return HRESULT_FROM_WIN32( GetLastError() );
 
@@ -67,7 +73,14 @@ static HRESULT HSTRINGToMultiByte( HSTRING hstr, char **str )
     UINT32 wstr_size;
     int str_size;
 
+    if (!str) return E_POINTER;
+    *str = NULL;
     wstr = WindowsGetStringRawBuffer( hstr, &wstr_size );
+    if (!wstr_size)
+    {
+        if (!(*str = calloc( 1, sizeof(char) ))) return E_OUTOFMEMORY;
+        return S_OK;
+    }
     if (!(str_size = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wstr, wstr_size, NULL, 0, NULL, NULL )))
         return HRESULT_FROM_WIN32( GetLastError() );
     if (!(*str = calloc( str_size + 1, sizeof(char) ))) return E_OUTOFMEMORY;
@@ -103,7 +116,10 @@ static HRESULT parse_json( const char *json, SIZE_T jsonLen, IJsonObject **objec
     WCHAR *wJson;
     HRESULT hr;
 
-    TRACE( "json %s, object %p.\n", debugstr_an( json, jsonLen ), object );
+    if (!object) return E_POINTER;
+    *object = NULL;
+    if (!json || !jsonLen || jsonLen > INT_MAX) return E_INVALIDARG;
+    TRACE( "json length %Iu, object %p.\n", jsonLen, object );
 
     if (!(wJsonLen = MultiByteToWideChar( CP_UTF8, MB_ERR_INVALID_CHARS, json, jsonLen, NULL, 0 ))) return HRESULT_FROM_WIN32( GetLastError() );
     if (FAILED(hr = WindowsCreateStringReference( name, wcslen( name ), &header, &string ))) return hr;
@@ -219,7 +235,9 @@ static BOOL ascii_equal_i( const char *left, const char *right, SIZE_T length )
 
 static BOOL endpoint_host_matches( const char *host, SIZE_T host_length, const char *pattern )
 {
-    SIZE_T pattern_length = strlen( pattern );
+    SIZE_T pattern_length;
+
+    if (!host || !pattern || !(pattern_length = strlen( pattern ))) return FALSE;
 
     if (pattern_length > 2 && pattern[0] == '*' && pattern[1] == '.')
     {
@@ -321,6 +339,12 @@ static HRESULT WINAPI user_RequestOAuthCode( IUser *iface, HSTRING *user, HSTRIN
 
     TRACE( "iface %p, user %p, uri %p.\n", iface, user, uri );
 
+    if (!user || !uri) return E_POINTER;
+    *user = *uri = NULL;
+    if (!msaAppId || !*msaAppId) return E_GAME_MISSING_GAME_CONFIG;
+    WindowsDeleteString( impl->deviceCode );
+    impl->deviceCode = NULL;
+
     if (!(data = calloc( 1, ARRAY_SIZE( template ) + strlen( msaAppId ) )))
     {
         return E_OUTOFMEMORY;
@@ -339,11 +363,12 @@ static HRESULT WINAPI user_RequestOAuthCode( IUser *iface, HSTRING *user, HSTRIN
 cleanup:
     if (data) free( data );
     if (buffer) free( buffer );
-    IJsonObject_Release( object );
+    if (object) IJsonObject_Release( object );
     if (SUCCEEDED(hr)) return hr;
     if (*uri) WindowsDeleteString( *uri );
     if (*user) WindowsDeleteString( *user );
     if (impl->deviceCode) WindowsDeleteString( impl->deviceCode );
+    *uri = *user = impl->deviceCode = NULL;
     return hr;
 }
 
@@ -363,6 +388,9 @@ static HRESULT WINAPI user_RequestOAuthToken( IUser *iface )
 
     TRACE( "iface %p.\n", iface );
 
+    if (!msaAppId || !*msaAppId) return E_GAME_MISSING_GAME_CONFIG;
+    if (!impl->deviceCode) return E_UNEXPECTED;
+
     wDeviceCode = WindowsGetStringRawBuffer( impl->deviceCode, &wDeviceCodeLen );
     if (!(deviceCodeLen = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wDeviceCode, wDeviceCodeLen, NULL, 0, NULL, NULL ))) goto error;
     if (!(data = calloc( 1, ARRAY_SIZE( template ) + deviceCodeLen + strlen( "&client_id=" ) + strlen( msaAppId ) )))
@@ -376,10 +404,12 @@ static HRESULT WINAPI user_RequestOAuthToken( IUser *iface )
     strcat( data, "&client_id=" );
     strcat( data, msaAppId );
 
-    while (TRUE)
+    /* Do not keep a worker blocked indefinitely on expired codes or network failures. */
+    for (UINT32 attempt = 0; ; ++attempt)
     {
         if (SUCCEEDED(hr = http_request( L"POST", L"login.live.com", L"/oauth20_token.srf", data, CT_FORM_URLENCODED, ACCEPT_JSON, (UCHAR **)&buffer, &size ))) break;
-        Sleep( impl->interval * 1000 );
+        if (hr != E_FAIL || attempt == 59) goto cleanup;
+        Sleep( impl->interval >= 1 && impl->interval <= 10 ? impl->interval * 1000 : 5000 );
     }
 
     if (FAILED(hr = parse_json( buffer, size, &object ))) goto cleanup;
@@ -427,6 +457,9 @@ static HRESULT WINAPI user_RefreshOAuthToken( IUser *iface )
 
     TRACE( "iface %p.\n", iface );
 
+    if (!msaAppId || !*msaAppId) return E_GAME_MISSING_GAME_CONFIG;
+    if (!impl->refreshToken) return E_UNEXPECTED;
+
     wRefreshToken = WindowsGetStringRawBuffer( impl->refreshToken, &wRefreshTokenLen );
     if (!(refreshTokenLen = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wRefreshToken, wRefreshTokenLen, NULL, 0, NULL, NULL ))) goto error;
     if (!(data = calloc( 1, ARRAY_SIZE( template ) + strlen( msaAppId ) + strlen( "&refresh_token=" ) + refreshTokenLen )))
@@ -456,6 +489,8 @@ cleanup:
     if (object) IJsonObject_Release( object );
     if (SUCCEEDED(hr))
     {
+        WindowsDeleteString( impl->refreshToken );
+        WindowsDeleteString( impl->accessToken );
         impl->refreshToken = newRefresh;
         impl->accessToken = newAccess;
         return hr;
@@ -474,6 +509,7 @@ static HRESULT WINAPI user_RequestUserToken( IUser *iface )
     UINT32 tokenLen, wTokenLen;
     IJsonObject *object = NULL;
     const WCHAR *wToken;
+    HSTRING newToken = NULL;
     UCHAR *buf = NULL;
     char *body = NULL;
     SIZE_T bufSize;
@@ -483,7 +519,7 @@ static HRESULT WINAPI user_RequestUserToken( IUser *iface )
 
     wToken = WindowsGetStringRawBuffer( impl->accessToken, &wTokenLen );
     if (!(tokenLen = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wToken, wTokenLen, NULL, 0, NULL, NULL ))) goto error;
-    if (!(body = calloc( strlen( template ) + tokenLen + strlen( "\"}}" ), sizeof(char) )))
+    if (!(body = calloc( strlen( template ) + tokenLen + strlen( "\"}}" ) + 1, sizeof(char) )))
     {
         hr = E_OUTOFMEMORY;
         goto cleanup;
@@ -504,8 +540,13 @@ static HRESULT WINAPI user_RequestUserToken( IUser *iface )
         WARN( "User-token JSON parse failed, hr %#lx.\n", hr );
         goto cleanup;
     }
-    if (FAILED(hr = get_json_string( object, L"Token", &impl->userToken )))
+    if (FAILED(hr = get_json_string( object, L"Token", &newToken )))
         WARN( "User-token response lacked Token, hr %#lx.\n", hr );
+    else
+    {
+        WindowsDeleteString( impl->userToken );
+        impl->userToken = newToken;
+    }
     goto cleanup;
 
 error:
@@ -1406,7 +1447,7 @@ static HRESULT WINAPI user_CacheEndpoints( IUser *iface )
     if (FAILED(hr = get_json_array( object, L"SignaturePolicies", &array ))) goto cleanup;
     if (FAILED(hr = IJsonArray_QueryInterface( array, &IID_IVector_IJsonValue, (void **)&vector ))) goto cleanup;
     if (FAILED(hr = IVector_IJsonValue_get_Size( vector, &policiesLen ))) goto cleanup;
-    if (!(policies = calloc( policiesLen, sizeof(*policies) )))
+    if (policiesLen && !(policies = calloc( policiesLen, sizeof(*policies) )))
     {
         hr = E_OUTOFMEMORY;
         goto cleanup;
@@ -1433,7 +1474,7 @@ static HRESULT WINAPI user_CacheEndpoints( IUser *iface )
     if (FAILED(hr = get_json_array( object, L"EndPoints", &array ))) goto cleanup;
     if (FAILED(hr = IJsonArray_QueryInterface( array, &IID_IVector_IJsonValue, (void **)&vector ))) goto cleanup;
     if (FAILED(hr = IVector_IJsonValue_get_Size( vector, &endpointsLen ))) goto cleanup;
-    if (!(endpoints = calloc( endpointsLen, sizeof(*endpoints) )))
+    if (endpointsLen && !(endpoints = calloc( endpointsLen, sizeof(*endpoints) )))
     {
         hr = E_OUTOFMEMORY;
         goto cleanup;
@@ -1635,7 +1676,7 @@ static HRESULT LoadDefaultUser( XUserHandle *user )
 
     status = RegGetValueA( HKEY_LOCAL_MACHINE, "Software\\Wine\\WineGDK", "RefreshToken", RRF_RT_REG_SZ, NULL, buffer, &size );
     if (status != ERROR_SUCCESS) goto error;
-    if (FAILED(hr = MultiByteToHSTRING( buffer, size, &impl->refreshToken ))) goto cleanup;
+    if (FAILED(hr = MultiByteToHSTRING( buffer, strlen( buffer ), &impl->refreshToken ))) goto cleanup;
     if (FAILED(hr = IUser_RefreshOAuthToken( &impl->IUser_iface ))) goto cleanup;
     hr = finish_user_load( impl );
     goto cleanup;
@@ -1709,6 +1750,9 @@ static ULONG WINAPI x_user_Release( IXUserImpl6 *iface )
 static HRESULT WINAPI x_user_XUserDuplicateHandle( IXUserImpl6 *iface, XUserHandle handle, XUserHandle *duplicatedHandle )
 {
     TRACE( "iface %p, handle %p, duplicatedHandle %p.\n", iface, handle, duplicatedHandle );
+    if (!duplicatedHandle) return E_POINTER;
+    *duplicatedHandle = NULL;
+    if (!handle) return E_POINTER;
     IUser_AddRef( &handle->IUser_iface );
     *duplicatedHandle = handle;
     return S_OK;
@@ -1730,6 +1774,7 @@ static INT32 WINAPI x_user_XUserCompare( IXUserImpl6 *iface, XUserHandle user1, 
 static HRESULT WINAPI x_user_XUserGetMaxUsers( IXUserImpl6 *iface, UINT32 *maxUsers )
 {
     TRACE( "iface %p, maxUsers %p.\n", iface, maxUsers );
+    if (!maxUsers) return E_POINTER;
     *maxUsers = 1;
     return S_OK;
 }
@@ -1748,6 +1793,7 @@ static HRESULT WINAPI XUserAddProvider( XAsyncOp op, const XAsyncProviderData *d
 {
     struct XUserAddContext *context;
     IXThreadingImpl *xthreading;
+    BOOL uninitialize = FALSE;
     HRESULT hr;
 
     if (FAILED(hr = QueryApiImpl( &CLSID_XThreadingImpl, &IID_IXThreadingImpl, (void **)&xthreading ))) return hr;
@@ -1761,9 +1807,13 @@ static HRESULT WINAPI XUserAddProvider( XAsyncOp op, const XAsyncProviderData *d
 
         case XAsyncOp_GetResult:
             memcpy( data->buffer, &context->user, sizeof(XUserHandle) );
+            context->user = NULL; /* The result transfers ownership to the caller. */
             break;
 
         case XAsyncOp_DoWork:
+            hr = RoInitialize( RO_INIT_MULTITHREADED );
+            if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) goto complete;
+            uninitialize = SUCCEEDED(hr);
 #if XODUS_INTEROP
             {
                 IAsyncOperation_IMsaTokenResponse *operation = NULL;
@@ -1771,8 +1821,8 @@ static HRESULT WINAPI XUserAddProvider( XAsyncOp op, const XAsyncProviderData *d
                 const char *access_token = NULL;
                 DWORD async;
 
-                if (context->options & XUserAddOptions_AddDefaultUserSilently ||
-                    context->options & XUserAddOptions_AddDefaultUserAllowingUI)
+                if (xodusAvailable && (context->options & XUserAddOptions_AddDefaultUserSilently ||
+                    context->options & XUserAddOptions_AddDefaultUserAllowingUI))
                 {
                     hr = IXodusService_MsaTokenRequest(
                         xodus_service, msaAppId, context->options & XUserAddOptions_AddDefaultUserAllowingUI,
@@ -1810,11 +1860,13 @@ static HRESULT WINAPI XUserAddProvider( XAsyncOp op, const XAsyncProviderData *d
             else hr = E_ABORT;
 
         complete:
+            if (uninitialize) RoUninitialize();
             IXThreadingImpl_XAsyncComplete( xthreading, data->async, hr, SUCCEEDED(hr) ? sizeof(XUserHandle) : 0 );
             hr = S_OK;
             break;
 
         case XAsyncOp_Cleanup:
+            if (context->user) IUser_Release( &context->user->IUser_iface );
             free( context );
             break;
 
@@ -1881,6 +1933,7 @@ static HRESULT WINAPI x_user_XUserFindUserByLocalId( IXUserImpl6 *iface, XUserLo
 static HRESULT WINAPI x_user_XUserGetId( IXUserImpl6 *iface, XUserHandle user, UINT64 *userId )
 {
     TRACE( "iface %p, user %p, userId %p.\n", iface, user, userId );
+    if (!user || !userId) return E_POINTER;
     *userId = user->xuid;
     return S_OK;
 }
@@ -1894,6 +1947,7 @@ static HRESULT WINAPI x_user_XUserFindUserById( IXUserImpl6 *iface, UINT64 userI
 static HRESULT WINAPI x_user_XUserGetIsGuest( IXUserImpl6 *iface, XUserHandle user, BOOLEAN *isGuest )
 {
     TRACE( "iface %p, user %p, isGuest %p.\n", iface, user, isGuest );
+    if (!user || !isGuest) return E_POINTER;
     *isGuest = FALSE;
     return S_OK;
 }
@@ -1901,6 +1955,7 @@ static HRESULT WINAPI x_user_XUserGetIsGuest( IXUserImpl6 *iface, XUserHandle us
 static HRESULT WINAPI x_user_XUserGetState( IXUserImpl6 *iface, XUserHandle user, XUserState *state )
 {
     TRACE( "iface %p, user %p, state %p.\n", iface, user, state );
+    if (!user || !state) return E_POINTER;
     *state = XUserState_SignedIn;
     return S_OK;
 }
@@ -1982,6 +2037,8 @@ static HRESULT WINAPI XUserGetGamerPictureProvider( XAsyncOp op, const XAsyncPro
             memcpy( hostName, uc.lpszHostName, uc.dwHostNameLength * sizeof(WCHAR) );
             pathAndQuery = hostName + uc.dwHostNameLength + 1;
             memcpy( pathAndQuery, uc.lpszUrlPath, (uc.dwUrlPathLength + uc.dwExtraInfoLength) * sizeof(WCHAR) );
+            wcscat( pathAndQuery, suffix );
+            if (!uc.dwExtraInfoLength) pathAndQuery[uc.dwUrlPathLength] = '?';
 
             hr = http_request( L"GET", hostName, pathAndQuery, NULL, NULL, accept, (UCHAR **)&context->buffer, &context->bufferSize );
 
@@ -2027,12 +2084,17 @@ static HRESULT WINAPI x_user_XUserGetGamerPictureAsync( IXUserImpl6 *iface, XUse
     if (FAILED(hr = IXUserImpl6_XUserDuplicateHandle( iface, user, &context->user )))
     {
         IXThreadingImpl_Release( xthreading );
+        free( context );
         return hr;
     }
 
     hr = IXThreadingImpl_XAsyncBegin( xthreading, async, context, NULL, "XUserGetGamerPictureAsync", XUserGetGamerPictureProvider );
     IXThreadingImpl_Release( xthreading );
-    if (FAILED(hr)) free( context );
+    if (FAILED(hr))
+    {
+        IUser_Release( &context->user->IUser_iface );
+        free( context );
+    }
     return hr;
 }
 
@@ -2043,6 +2105,8 @@ static HRESULT WINAPI x_user_XUserGetGamerPictureResultSize( IXUserImpl6 *iface,
 
     TRACE( "iface %p, async %p, bufferSize %p.\n", iface, async, bufferSize );
 
+    if (!async || !bufferSize) return E_POINTER;
+    *bufferSize = 0;
     if (FAILED(hr = QueryApiImpl( &CLSID_XThreadingImpl, &IID_IXThreadingImpl, (void **)&xthreading ))) return hr;
     hr = IXThreadingImpl_XAsyncGetResultSize( xthreading, async, bufferSize );
     IXThreadingImpl_Release( xthreading );
@@ -2065,6 +2129,7 @@ static HRESULT WINAPI x_user_XUserGetGamerPictureResult( IXUserImpl6 *iface, XAs
 static HRESULT WINAPI x_user_XUserGetAgeGroup( IXUserImpl6 *iface, XUserHandle user, XUserAgeGroup *ageGroup )
 {
     TRACE( "iface %p, user %p, ageGroup %p.\n", iface, user, ageGroup );
+    if (!user || !ageGroup) return E_POINTER;
     *ageGroup = XUserAgeGroup_Adult;
     return S_OK;
 }
@@ -2102,6 +2167,7 @@ struct XUserGetTokenAndSignatureContext
     SIZE_T bodySize;
     void *bodyBuffer;
     BOOLEAN isUtf16;
+    SIZE_T resultSize;
     union
     {
         XUserGetTokenAndSignatureData *data;
@@ -2113,7 +2179,9 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
 {
     URL_COMPONENTSA uc = { .dwStructSize = sizeof(URL_COMPONENTSA), .dwHostNameLength = -1,
             .dwUrlPathLength = -1, .dwExtraInfoLength = -1 };
-    UINT32 authLen, bufLen, dataSize = 0, pathAndQueryLen, tokenLen, userHashLen, wAuthLen, wTokenLen, wUserHashLen;
+    UINT32 tokenLen, userHashLen, wTokenLen, wUserHashLen;
+    SIZE_T authLen, dataSize = 0, pathAndQueryLen, wAuthLen;
+    UINT64 bufLen;
     struct XUserGetTokenAndSignatureContext *context;
     char *auth, *method, *ptr, *signature;
     const WCHAR *wToken, *wUserHash;
@@ -2123,7 +2191,8 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
     WCHAR *wAuth, *wSignature;
     FILETIME timestamp;
     char *buf = NULL;
-    BOOL xstsLocked = FALSE;
+    BOOL xstsLocked = FALSE, uninitialize = FALSE, refresh;
+    time_t now;
     HRESULT hr;
 
     if (FAILED(hr = QueryApiImpl( &CLSID_XThreadingImpl, &IID_IXThreadingImpl, (void **)&xthreading ))) return hr;
@@ -2144,6 +2213,11 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
             break;
 
         case XAsyncOp_GetResult:
+            if (!data->buffer || data->bufferSize < context->resultSize)
+            {
+                hr = HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+                break;
+            }
             if (context->isUtf16)
             {
                 XUserGetTokenAndSignatureUtf16Data *result = data->buffer;
@@ -2166,7 +2240,15 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
             break;
 
         case XAsyncOp_DoWork:
+            hr = RoInitialize( RO_INIT_MULTITHREADED );
+            if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) goto cleanup;
+            uninitialize = SUCCEEDED(hr);
             if (!InternetCrackUrlA( context->url, 0, 0, &uc )) goto error;
+            if (!uc.dwHostNameLength || (uc.nScheme != INTERNET_SCHEME_HTTP && uc.nScheme != INTERNET_SCHEME_HTTPS))
+            {
+                hr = E_INVALIDARG;
+                goto cleanup;
+            }
             pathAndQueryLen = uc.dwUrlPathLength + uc.dwExtraInfoLength;
             relyingParty = user_GetRelyingParty( context->user, &uc );
             AcquireSRWLockExclusive( &context->user->xstsLock );
@@ -2182,7 +2264,12 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
             if (!(tokenLen = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wToken, wTokenLen, NULL, 0, NULL, NULL ))) goto error;
             wAuthLen = wcslen( L"XBL3.0 x=;" ) + wUserHashLen + wTokenLen;
             authLen = strlen( "XBL3.0 x=;" ) + userHashLen + tokenLen;
-            bufLen = strlen( context->method ) + pathAndQueryLen + authLen + context->headersSize + min( context->bodySize, 0x2000 ) + 18;
+            bufLen = (UINT64)strlen( context->method ) + pathAndQueryLen + authLen + context->headersSize + min( context->bodySize, 0x2000 ) + 18;
+            if (bufLen > MAXDWORD)
+            {
+                hr = E_INVALIDARG;
+                goto cleanup;
+            }
             GetSystemTimeAsFileTime( &timestamp );
 
             if (!(buf = calloc( 1, bufLen )))
@@ -2209,7 +2296,7 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
             /* method */
             ptr = buf + 14;
             method = context->method;
-            while (*method) *(ptr++) = toupper( *(method++) );
+            while (*method) *(ptr++) = toupper( (unsigned char)*(method++) );
             ptr++;
 
             /* path and query */
@@ -2290,9 +2377,6 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
                 wcscat( wAuth, L";" );
                 wcsncat( wAuth, wToken, wTokenLen );
                 encode_base64_utf16( 76, rawSignature, 104, wSignature, TRUE );
-
-                TRACE( "token: %s\n", debugstr_wn( context->dataUtf16->token, context->dataUtf16->tokenCount ) );
-                TRACE( "signature: %s\n", debugstr_wn( context->dataUtf16->signature, context->dataUtf16->signatureCount ) );
             }
             else
             {
@@ -2313,9 +2397,6 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
 
                 strcpy( auth, buf + strlen( context->method ) + pathAndQueryLen + 16 );
                 encode_base64( 76, rawSignature, 104, signature, TRUE );
-
-                TRACE( "token: %s\n", debugstr_an( context->data->token, context->data->tokenSize ) );
-                TRACE( "signature: %s\n", debugstr_an( context->data->signature, context->data->signatureSize ) );
             }
             goto cleanup;
 
@@ -2330,6 +2411,8 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
                 free( context->data );
                 context->data = NULL;
             }
+            if (uninitialize) RoUninitialize();
+            context->resultSize = dataSize;
             IXThreadingImpl_XAsyncComplete( xthreading, data->async, hr, dataSize );
             hr = S_OK;
             break;
@@ -2351,16 +2434,29 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
 static HRESULT WINAPI x_user_XUserGetTokenAndSignatureAsync( IXUserImpl6 *iface, XUserHandle user, XUserGetTokenAndSignatureOptions options, const char *method, const char *url, SIZE_T headerCount, const XUserGetTokenAndSignatureHttpHeader *headers, SIZE_T bodySize, const void *bodyBuffer, XAsyncBlock *async )
 {
     struct XUserGetTokenAndSignatureContext *context;
-    SIZE_T contextSize, headersSize = 0;
+    UINT64 contextSize;
+    SIZE_T headersSize = 0;
     IXThreadingImpl *xthreading;
     HRESULT hr;
     char *ptr;
 
     TRACE( "iface %p, user %p, options %d, method %s, url %s, headerCount %Iu, headers %p, bodySize %Iu, bodyBuffer %p, async %p.\n", iface, user, options, debugstr_a( method ), debugstr_a( url ), headerCount, headers, bodySize, bodyBuffer, async );
 
-    contextSize = sizeof(*context) + strlen( url ) + strlen( method ) + 2 + bodySize;
+    if (!user || !method || !url || !async || (headerCount && !headers) || (bodySize && !bodyBuffer)) return E_POINTER;
+    if (options & ~(XUserGetTokenAndSignatureOptions_ForceRefresh | XUserGetTokenAndSignatureOptions_AllUsers)) return E_INVALIDARG;
+    if (options & XUserGetTokenAndSignatureOptions_AllUsers) return E_NOTIMPL;
+    bodySize = min( bodySize, 0x2000 );
+    if (strlen( url ) > INT_MAX || strlen( method ) > INT_MAX) return E_INVALIDARG;
+    contextSize = (UINT64)sizeof(*context) + strlen( url ) + strlen( method ) + 2 + bodySize;
+    if (contextSize > MAXDWORD) return E_INVALIDARG;
     for (SIZE_T i = 0; i < headerCount; i++)
-        headersSize += (strlen( headers[i].value ) + 1);
+    {
+        SIZE_T size;
+        if (!headers[i].name || !headers[i].value) return E_POINTER;
+        size = strlen( headers[i].value ) + 1;
+        if (size > MAXDWORD - contextSize - headersSize) return E_INVALIDARG;
+        headersSize += size;
+    }
 
     if (!(context = calloc( 1, contextSize + headersSize ))) return E_OUTOFMEMORY;
     IUser_AddRef( &user->IUser_iface );
@@ -2380,7 +2476,8 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureAsync( IXUserImpl6 *iface,
     for (SIZE_T i = 0; i < headerCount; i++)
         ptr += (strlen( strcpy( ptr, headers[i].value ) ) + 1);
     /* body */
-    memcpy( (context->bodyBuffer = ptr), bodyBuffer, bodySize );
+    context->bodyBuffer = ptr;
+    if (bodySize) memcpy( ptr, bodyBuffer, bodySize );
 
     if (FAILED(hr = QueryApiImpl( &CLSID_XThreadingImpl, &IID_IXThreadingImpl, (void **)&xthreading ))) goto error;
     hr = IXThreadingImpl_XAsyncBegin( xthreading, async, context, NULL, "XUserGetTokenAndSignatureAsync", XUserGetTokenAndSignatureProvider );
@@ -2400,6 +2497,8 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureResultSize( IXUserImpl6 *i
 
     TRACE( "iface %p, async %p, bufferSize %p.\n", iface, async, bufferSize );
 
+    if (!async || !bufferSize) return E_POINTER;
+    *bufferSize = 0;
     if (FAILED(hr = QueryApiImpl( &CLSID_XThreadingImpl, &IID_IXThreadingImpl, (void **)&xthreading ))) return hr;
     hr = IXThreadingImpl_XAsyncGetResultSize( xthreading, async, bufferSize );
     IXThreadingImpl_Release( xthreading );
@@ -2413,16 +2512,21 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureResult( IXUserImpl6 *iface
 
     TRACE( "iface %p, async %p, bufferSize %Iu, buffer %p, ptrToBuffer %p, bufferUsed %p.\n", iface, async, bufferSize, buffer, ptrToBuffer, bufferUsed );
 
+    if (!ptrToBuffer) return E_POINTER;
+    *ptrToBuffer = NULL;
+    if (!async || !buffer) return E_POINTER;
+    if (bufferUsed) *bufferUsed = 0;
     if (FAILED(hr = QueryApiImpl( &CLSID_XThreadingImpl, &IID_IXThreadingImpl, (void **)&xthreading ))) return hr;
     hr = IXThreadingImpl_XAsyncGetResult( xthreading, async, NULL, bufferSize, buffer, bufferUsed );
-    *ptrToBuffer = (XUserGetTokenAndSignatureData *)buffer;
+    if (SUCCEEDED(hr)) *ptrToBuffer = (XUserGetTokenAndSignatureData *)buffer;
     IXThreadingImpl_Release( xthreading );
     return hr;
 }
 
 static HRESULT WINAPI x_user_XUserGetTokenAndSignatureUtf16Async( IXUserImpl6 *iface, XUserHandle user, XUserGetTokenAndSignatureOptions options, const WCHAR *method, const WCHAR *url, SIZE_T headerCount, const XUserGetTokenAndSignatureUtf16HttpHeader *headers, SIZE_T bodySize, const void *bodyBuffer, XAsyncBlock *async )
 {
-    SIZE_T contextSize, headersSize = 0, methodLen, urlLen;
+    UINT64 contextSize;
+    SIZE_T headersSize = 0, methodLen, urlLen;
     struct XUserGetTokenAndSignatureContext *context;
     IXThreadingImpl *xthreading;
     HRESULT hr;
@@ -2431,12 +2535,19 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureUtf16Async( IXUserImpl6 *i
 
     TRACE( "iface %p, user %p, options %d, method %s, url %s, headerCount %Iu, headers %p, bodySize %Iu, bodyBuffer %p, async %p.\n", iface, user, options, debugstr_w( method ), debugstr_w( url ), headerCount, headers, bodySize, bodyBuffer, async );
 
+    if (!user || !method || !url || !async || (headerCount && !headers) || (bodySize && !bodyBuffer)) return E_POINTER;
+    if (options & ~(XUserGetTokenAndSignatureOptions_ForceRefresh | XUserGetTokenAndSignatureOptions_AllUsers)) return E_INVALIDARG;
+    if (options & XUserGetTokenAndSignatureOptions_AllUsers) return E_NOTIMPL;
+    bodySize = min( bodySize, 0x2000 );
     if (!(methodLen = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, method, -1, NULL, 0, NULL, NULL ))) return HRESULT_FROM_WIN32( GetLastError() );
     if (!(urlLen = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, url, -1, NULL, 0, NULL, NULL ))) return HRESULT_FROM_WIN32( GetLastError() );
-    contextSize = sizeof(*context) + urlLen + methodLen + bodySize;
+    contextSize = (UINT64)sizeof(*context) + urlLen + methodLen + bodySize;
+    if (contextSize > MAXDWORD) return E_INVALIDARG;
     for (SIZE_T i = 0; i < headerCount; i++)
     {
+        if (!headers[i].name || !headers[i].value) return E_POINTER;
         if (!(size = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, headers[i].value, -1, NULL, 0, NULL, NULL ))) return HRESULT_FROM_WIN32( GetLastError() );
+        if ((SIZE_T)size > MAXDWORD - contextSize - headersSize) return E_INVALIDARG;
         headersSize += size;
     }
 
@@ -2449,13 +2560,15 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureUtf16Async( IXUserImpl6 *i
     context->isUtf16 = TRUE;
 
     /* url */
-    ptr = (char *)context + sizeof(*context);
+    context->url = ptr = (char *)context + sizeof(*context);
     if (!WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, url, -1, ptr, urlLen, NULL, NULL )) goto error_win32;
     ptr += urlLen;
     /* method */
+    context->method = ptr;
     if (!WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, method, -1, ptr, methodLen, NULL, NULL )) goto error_win32;
     ptr += methodLen;
     /* headers */
+    context->headers = ptr;
     for (SIZE_T i = 0; i < headerCount; i++)
     {
         if (!(size = WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, headers[i].value, -1, NULL, 0, NULL, NULL ))) goto error_win32;
@@ -2463,7 +2576,8 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureUtf16Async( IXUserImpl6 *i
         ptr += size;
     }
     /* body */
-    memcpy( (context->bodyBuffer = ptr), bodyBuffer, bodySize );
+    context->bodyBuffer = ptr;
+    if (bodySize) memcpy( ptr, bodyBuffer, bodySize );
 
     if (FAILED(hr = QueryApiImpl( &CLSID_XThreadingImpl, &IID_IXThreadingImpl, (void **)&xthreading ))) goto error;
     hr = IXThreadingImpl_XAsyncBegin( xthreading, async, context, NULL, "XUserGetTokenAndSignatureUtf16Async", XUserGetTokenAndSignatureProvider );
@@ -2486,6 +2600,8 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureUtf16ResultSize( IXUserImp
 
     TRACE( "iface %p, async %p, bufferSize %p.\n", iface, async, bufferSize );
 
+    if (!async || !bufferSize) return E_POINTER;
+    *bufferSize = 0;
     if (FAILED(hr = QueryApiImpl( &CLSID_XThreadingImpl, &IID_IXThreadingImpl, (void **)&xthreading ))) return hr;
     hr = IXThreadingImpl_XAsyncGetResultSize( xthreading, async, bufferSize );
     IXThreadingImpl_Release( xthreading );
@@ -2499,9 +2615,13 @@ static HRESULT WINAPI x_user_XUserGetTokenAndSignatureUtf16Result( IXUserImpl6 *
 
     TRACE( "iface %p, async %p, bufferSize %Iu, buffer %p, ptrToBuffer %p, bufferUsed %p.\n", iface, async, bufferSize, buffer, ptrToBuffer, bufferUsed );
 
+    if (!ptrToBuffer) return E_POINTER;
+    *ptrToBuffer = NULL;
+    if (!async || !buffer) return E_POINTER;
+    if (bufferUsed) *bufferUsed = 0;
     if (FAILED(hr = QueryApiImpl( &CLSID_XThreadingImpl, &IID_IXThreadingImpl, (void **)&xthreading ))) return hr;
     hr = IXThreadingImpl_XAsyncGetResult( xthreading, async, NULL, bufferSize, buffer, bufferUsed );
-    *ptrToBuffer = (XUserGetTokenAndSignatureUtf16Data *)buffer;
+    if (SUCCEEDED(hr)) *ptrToBuffer = (XUserGetTokenAndSignatureUtf16Data *)buffer;
     IXThreadingImpl_Release( xthreading );
     return hr;
 }
@@ -2546,6 +2666,7 @@ static BOOLEAN WINAPI x_user_XUserUnregisterForChangeEvent( IXUserImpl6 *iface, 
 static HRESULT WINAPI x_user_XUserGetSignOutDeferral( IXUserImpl6 *iface, XUserSignOutDeferralHandle *deferral )
 {
     TRACE( "iface %p, deferral %p.\n", iface, deferral );
+    if (!deferral) return E_POINTER;
     *deferral = NULL;
     return E_GAMEUSER_DEFERRAL_NOT_AVAILABLE;
 }

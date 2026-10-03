@@ -90,7 +90,7 @@ static void ensure_connectivity_bringup( void )
 static HRESULT WINAPI security_information_provider( XAsyncOp op, const XAsyncProviderData *data )
 {
     IXThreadingImpl *threading;
-    HRESULT hr;
+    HRESULT hr = E_NOTIMPL;
 
     TRACE( "op %u, asyncBlock %p, bufferSize %Iu, buffer %p.\n",
             static_cast<unsigned int>(op), data->async, data->bufferSize, data->buffer );
@@ -108,6 +108,11 @@ static HRESULT WINAPI security_information_provider( XAsyncOp op, const XAsyncPr
             break;
         case XAsyncOp::GetResult:
         {
+            if (!data->buffer || data->bufferSize < sizeof(XNetworkingSecurityInformation))
+            {
+                hr = HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
+                break;
+            }
             auto *securityInformation = static_cast<XNetworkingSecurityInformation *>(data->buffer);
             securityInformation->enabledHttpSecurityProtocolFlags = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1
                     | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_1 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
@@ -296,7 +301,9 @@ public:
 
         TRACE( "asyncBlock %p, securityInformationBufferByteCount %Iu, securityInformationBufferByteCountUsed %p, securityInformationBuffer %p, securityInformation %p.\n",
                 asyncBlock, securityInformationBufferByteCount, securityInformationBufferByteCountUsed, securityInformationBuffer, securityInformation );
-        if (!asyncBlock || !securityInformationBuffer || !securityInformation) return E_POINTER;
+        if (!securityInformation) return E_POINTER;
+        *securityInformation = nullptr;
+        if (!asyncBlock || !securityInformationBuffer) return E_POINTER;
         if (FAILED(hr = QueryApiImpl( &CLSID_XThreadingImpl, IID_IXThreadingImpl, (void **)&threading )))
             return hr;
         if (SUCCEEDED(hr = threading->XAsyncGetResult( asyncBlock, nullptr, securityInformationBufferByteCount,
@@ -415,6 +422,25 @@ public:
         if (!statisticsBuffer) return E_POINTER;
         memset( statisticsBuffer, 0, sizeof(*statisticsBuffer) );
         return S_OK;
+    }
+
+    HRESULT WINAPI XNetworkingQueryConfigurationSetting(XNetworkingConfigurationSetting setting, UINT64 *value) override
+    {
+        if (!value) return E_POINTER;
+        *value = 0;
+        return E_NOTIMPL;
+    }
+
+    HRESULT WINAPI XNetworkingSetConfigurationSetting(XNetworkingConfigurationSetting setting, UINT64 value) override
+    {
+        return E_NOTIMPL;
+    }
+
+    HRESULT WINAPI XNetworkingQueryStatistics(XNetworkingStatisticsType type, XNetworkingStatisticsBuffer *buffer) override
+    {
+        if (!buffer) return E_POINTER;
+        memset(buffer, 0, sizeof(*buffer));
+        return E_NOTIMPL;
     }
 
 private:

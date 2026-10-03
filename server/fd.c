@@ -169,27 +169,11 @@ static void fd_destroy( struct object *obj );
 
 static const struct object_ops fd_ops =
 {
-    sizeof(struct fd),        /* size */
-    &no_type,                 /* type */
-    fd_dump,                  /* dump */
-    NULL,                     /* add_queue */
-    NULL,                     /* remove_queue */
-    NULL,                     /* signaled */
-    NULL,                     /* satisfied */
-    no_signal,                /* signal */
-    no_get_fd,                /* get_fd */
-    fd_get_sync,              /* get_sync */
-    default_map_access,       /* map_access */
-    default_get_sd,           /* get_sd */
-    default_set_sd,           /* set_sd */
-    no_get_full_name,         /* get_full_name */
-    no_lookup_name,           /* lookup_name */
-    no_link_name,             /* link_name */
-    NULL,                     /* unlink_name */
-    no_open_file,             /* open_file */
-    no_kernel_obj_list,       /* get_kernel_obj_list */
-    no_close_handle,          /* close_handle */
-    fd_destroy                /* destroy */
+    .size     = sizeof(struct fd),
+    .type     = &no_type,
+    .dump     = fd_dump,
+    .get_sync = fd_get_sync,
+    .destroy  = fd_destroy,
 };
 
 /* device object */
@@ -211,27 +195,10 @@ static void device_destroy( struct object *obj );
 
 static const struct object_ops device_ops =
 {
-    sizeof(struct device),    /* size */
-    &no_type,                 /* type */
-    device_dump,              /* dump */
-    no_add_queue,             /* add_queue */
-    NULL,                     /* remove_queue */
-    NULL,                     /* signaled */
-    NULL,                     /* satisfied */
-    no_signal,                /* signal */
-    no_get_fd,                /* get_fd */
-    default_get_sync,         /* get_sync */
-    default_map_access,       /* map_access */
-    default_get_sd,           /* get_sd */
-    default_set_sd,           /* set_sd */
-    no_get_full_name,         /* get_full_name */
-    no_lookup_name,           /* lookup_name */
-    no_link_name,             /* link_name */
-    NULL,                     /* unlink_name */
-    no_open_file,             /* open_file */
-    no_kernel_obj_list,       /* get_kernel_obj_list */
-    no_close_handle,          /* close_handle */
-    device_destroy            /* destroy */
+    .size    = sizeof(struct device),
+    .type    = &no_type,
+    .dump    = device_dump,
+    .destroy = device_destroy,
 };
 
 /* inode object */
@@ -252,27 +219,10 @@ static void inode_destroy( struct object *obj );
 
 static const struct object_ops inode_ops =
 {
-    sizeof(struct inode),     /* size */
-    &no_type,                 /* type */
-    inode_dump,               /* dump */
-    no_add_queue,             /* add_queue */
-    NULL,                     /* remove_queue */
-    NULL,                     /* signaled */
-    NULL,                     /* satisfied */
-    no_signal,                /* signal */
-    no_get_fd,                /* get_fd */
-    default_get_sync,         /* get_sync */
-    default_map_access,       /* map_access */
-    default_get_sd,           /* get_sd */
-    default_set_sd,           /* set_sd */
-    no_get_full_name,         /* get_full_name */
-    no_lookup_name,           /* lookup_name */
-    no_link_name,             /* link_name */
-    NULL,                     /* unlink_name */
-    no_open_file,             /* open_file */
-    no_kernel_obj_list,       /* get_kernel_obj_list */
-    no_close_handle,          /* close_handle */
-    inode_destroy             /* destroy */
+    .size    = sizeof(struct inode),
+    .type    = &no_type,
+    .dump    = inode_dump,
+    .destroy = inode_destroy,
 };
 
 /* file lock object */
@@ -297,27 +247,11 @@ static void file_lock_destroy( struct object *obj );
 
 static const struct object_ops file_lock_ops =
 {
-    sizeof(struct file_lock),   /* size */
-    &no_type,                   /* type */
-    file_lock_dump,             /* dump */
-    NULL,                       /* add_queue */
-    NULL,                       /* remove_queue */
-    NULL,                       /* signaled */
-    NULL,                       /* satisfied */
-    no_signal,                  /* signal */
-    no_get_fd,                  /* get_fd */
-    file_lock_get_sync,         /* get_sync */
-    default_map_access,         /* map_access */
-    default_get_sd,             /* get_sd */
-    default_set_sd,             /* set_sd */
-    no_get_full_name,           /* get_full_name */
-    no_lookup_name,             /* lookup_name */
-    no_link_name,               /* link_name */
-    NULL,                       /* unlink_name */
-    no_open_file,               /* open_file */
-    no_kernel_obj_list,         /* get_kernel_obj_list */
-    no_close_handle,            /* close_handle */
-    file_lock_destroy,          /* destroy */
+    .size     = sizeof(struct file_lock),
+    .type     = &no_type,
+    .dump     = file_lock_dump,
+    .get_sync = file_lock_get_sync,
+    .destroy  = file_lock_destroy,
 };
 
 
@@ -527,7 +461,8 @@ static int get_next_timeout( struct timespec *ts );
 
 static inline void fd_poll_event( struct fd *fd, int event )
 {
-    fd->fd_ops->poll_event( fd, event );
+    if (fd->fd_ops->poll_event) fd->fd_ops->poll_event( fd, event );
+    else default_poll_event( fd, event );
 }
 
 #ifdef USE_EPOLL
@@ -1577,7 +1512,7 @@ void unlock_fd( struct fd *fd, file_pos_t start, file_pos_t count )
             return;
         }
     }
-    set_error( STATUS_FILE_LOCK_CONFLICT );
+    set_error( STATUS_RANGE_NOT_LOCKED );
 }
 
 
@@ -1689,6 +1624,13 @@ void set_fd_events( struct fd *fd, int events )
         pollfd[user].fd = fd->unix_fd;
         pollfd[user].events = events;
     }
+}
+
+/* get the events we want to poll() for */
+static int get_poll_events( struct fd *fd )
+{
+    if (fd->fd_ops->get_poll_events) return fd->fd_ops->get_poll_events( fd );
+    return default_fd_get_poll_events( fd );
 }
 
 /* prepare an fd for unmounting its corresponding device */
@@ -1920,10 +1862,10 @@ static WCHAR *dup_nt_name( struct fd *root, struct unicode_str name, data_size_t
     return ret;
 }
 
-void get_nt_name( struct fd *fd, struct unicode_str *name )
+struct unicode_str get_nt_name( struct fd *fd )
 {
-    name->str = fd->nt_name;
-    name->len = fd->nt_namelen;
+    struct unicode_str name = { .str = fd->nt_name, .len = fd->nt_namelen };
+    return name;
 }
 
 /* open() wrapper that returns a struct fd with no fd user set */
@@ -1999,20 +1941,66 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
         {
             /* check for trailing slash on file path */
             if ((errno == ENOENT || (errno == ENOTDIR && !(options & FILE_DIRECTORY_FILE))) && name[strlen(name) - 1] == '/')
+            {
                 set_error( STATUS_OBJECT_NAME_INVALID );
-            else
+                goto error;
+            }
+
+            if (stat( name, &st ))
+            {
                 file_set_error();
-            goto error;
+                goto error;
+            }
+
+            /* POSIX requires that open(2) throws EOPNOTSUPP when `path` is a Unix
+             * socket. BSD throws EOPNOTSUPP in this case and the additional case of
+             * O_SHLOCK or O_EXLOCK being passed when `path` resides on a filesystem
+             * without lock support. Contrary to POSIX, Linux returns ENXIO in this
+             * case, so we also check that error code here.
+             */
+            if ((errno == EOPNOTSUPP || errno == ENXIO) && S_ISSOCK(st.st_mode))
+            {
+                /* Windows exposes a bound AF_UNIX socket as a reparse point: opening it
+                 * without FILE_OPEN_REPARSE_POINT fails with STATUS_IO_REPARSE_TAG_NOT_HANDLED,
+                 * and with the flag it yields a handle that only carries metadata, which is
+                 * what O_PATH gives us here.
+                 */
+                if (options & FILE_DELETE_ON_CLOSE)
+                    ; /* no error, go to regular deletion code path */
+                else if (!(options & FILE_OPEN_REPARSE_POINT))
+                {
+                    set_error( STATUS_IO_REPARSE_TAG_NOT_HANDLED );
+                    goto error;
+                }
+                else
+                {
+#ifdef O_PATH
+                    fd->unix_fd = open( name, O_PATH );
+#endif
+                    if (fd->unix_fd == -1)
+                    {
+                        file_set_error();
+                        goto error;
+                    }
+                }
+            }
+            else
+            {
+                file_set_error();
+                goto error;
+            }
         }
     }
 
     fd->nt_name = dup_nt_name( root, nt_name, &fd->nt_namelen );
     fd->unix_name = NULL;
-    fstat( fd->unix_fd, &st );
+    /* st was set from the file name if the file could not be opened */
+    if (fd->unix_fd != -1)
+        fstat( fd->unix_fd, &st );
     *mode = st.st_mode;
 
     /* only bother with an inode for normal files and directories */
-    if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode))
+    if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode) || S_ISSOCK(st.st_mode))
     {
         unsigned int err;
         struct inode *inode = get_inode( st.st_dev, st.st_ino, fd->unix_fd );
@@ -2074,7 +2062,10 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
                 set_error( STATUS_OBJECT_NAME_COLLISION );
                 goto error;
             }
-            ftruncate( fd->unix_fd, 0 );
+            if (fd->unix_fd != -1)
+                ftruncate( fd->unix_fd, 0 );
+            else
+                truncate( fd->unix_name, 0 );
         }
     }
     else  /* special file */
@@ -2255,7 +2246,7 @@ void default_poll_event( struct fd *fd, int event )
 
     /* if an error occurred, stop polling this fd to avoid busy-looping */
     if (event & (POLLERR | POLLHUP)) set_fd_events( fd, -1 );
-    else if (!fd->inode) set_fd_events( fd, fd->fd_ops->get_poll_events( fd ) );
+    else if (!fd->inode) set_fd_events( fd, get_poll_events( fd ) );
 }
 
 void fd_queue_async( struct fd *fd, struct async *async, int type )
@@ -2283,7 +2274,7 @@ void fd_queue_async( struct fd *fd, struct async *async, int type )
     if (type != ASYNC_TYPE_WAIT)
     {
         if (!fd->inode)
-            set_fd_events( fd, fd->fd_ops->get_poll_events( fd ) );
+            set_fd_events( fd, get_poll_events( fd ) );
         else  /* regular files are always ready for read and write */
             async_wake_up( queue, STATUS_ALERTED );
     }
@@ -2309,22 +2300,14 @@ void fd_async_wake_up( struct fd *fd, int type, unsigned int status )
 
 void fd_cancel_async( struct fd *fd, struct async *async )
 {
-    fd->fd_ops->cancel_async( fd, async );
+    if (fd->fd_ops->cancel_async) fd->fd_ops->cancel_async( fd, async );
+    else async_terminate( async, STATUS_CANCELLED );
 }
 
 void fd_reselect_async( struct fd *fd, struct async_queue *queue )
 {
-    fd->fd_ops->reselect_async( fd, queue );
-}
-
-void no_fd_queue_async( struct fd *fd, struct async *async, int type, int count )
-{
-    set_error( STATUS_OBJECT_TYPE_MISMATCH );
-}
-
-void default_fd_cancel_async( struct fd *fd, struct async *async )
-{
-    async_terminate( async, STATUS_CANCELLED );
+    if (fd->fd_ops->reselect_async) fd->fd_ops->reselect_async( fd, queue );
+    else default_fd_reselect_async( fd, queue );
 }
 
 void default_fd_queue_async( struct fd *fd, struct async *async, int type, int count )
@@ -2338,9 +2321,9 @@ void default_fd_reselect_async( struct fd *fd, struct async_queue *queue )
 {
     if (queue == &fd->read_q || queue == &fd->write_q)
     {
-        int poll_events = fd->fd_ops->get_poll_events( fd );
+        int poll_events = get_poll_events( fd );
         int events = check_fd_events( fd, poll_events );
-        if (events) fd->fd_ops->poll_event( fd, events );
+        if (events) fd_poll_event( fd, events );
         else set_fd_events( fd, poll_events );
     }
 }
@@ -2531,6 +2514,7 @@ static void get_reparse_point( struct fd *fd, struct async *async )
     /* we can't just allocate get_reply_max_size() here;
      * Linux won't return any data if the size is too small */
     char buffer[MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
+    struct stat st;
     int ret;
 
     if (!fd->unix_name)
@@ -2542,6 +2526,26 @@ static void get_reparse_point( struct fd *fd, struct async *async )
     if (!get_reply_max_size())
     {
         set_error( STATUS_INVALID_USER_BUFFER );
+        return;
+    }
+
+    /* A bound AF_UNIX socket carries its reparse tag in the inode type, not in the
+     * name suffix and extended attribute the other reparse points use. Windows
+     * reports IO_REPARSE_TAG_AF_UNIX with no reparse data at all. */
+    if (fd->unix_fd != -1 && !fstat( fd->unix_fd, &st ) && S_ISSOCK( st.st_mode ))
+    {
+        REPARSE_DATA_BUFFER *data = (REPARSE_DATA_BUFFER *)buffer;
+        unsigned int size = sizeof(data->ReparseTag) + sizeof(data->ReparseDataLength)
+                            + sizeof(data->Reserved);
+
+        if (get_reply_max_size() < size)
+        {
+            set_error( STATUS_BUFFER_TOO_SMALL );
+            return;
+        }
+        memset( data, 0, size );
+        data->ReparseTag = IO_REPARSE_TAG_AF_UNIX;
+        set_reply_data( data, size );
         return;
     }
 
@@ -2625,30 +2629,6 @@ static void delete_reparse_point( struct fd *fd, struct async *async )
     xattr_fremove( fd->unix_fd, XATTR_REPARSE );
 }
 
-/* default read() routine */
-void no_fd_read( struct fd *fd, struct async *async, file_pos_t pos )
-{
-    set_error( STATUS_OBJECT_TYPE_MISMATCH );
-}
-
-/* default write() routine */
-void no_fd_write( struct fd *fd, struct async *async, file_pos_t pos )
-{
-    set_error( STATUS_OBJECT_TYPE_MISMATCH );
-}
-
-/* default flush() routine */
-void no_fd_flush( struct fd *fd, struct async *async )
-{
-    set_error( STATUS_OBJECT_TYPE_MISMATCH );
-}
-
-/* default get_file_info() routine */
-void no_fd_get_file_info( struct fd *fd, obj_handle_t handle, unsigned int info_class )
-{
-    set_error( STATUS_OBJECT_TYPE_MISMATCH );
-}
-
 /* default get_file_info() routine */
 void default_fd_get_file_info( struct fd *fd, obj_handle_t handle, unsigned int info_class )
 {
@@ -2720,18 +2700,6 @@ void default_fd_get_file_info( struct fd *fd, obj_handle_t handle, unsigned int 
     default:
         set_error( STATUS_NOT_IMPLEMENTED );
     }
-}
-
-/* default get_volume_info() routine */
-void no_fd_get_volume_info( struct fd *fd, struct async *async, unsigned int info_class )
-{
-    set_error( STATUS_OBJECT_TYPE_MISMATCH );
-}
-
-/* default ioctl() routine */
-void no_fd_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
-{
-    set_error( STATUS_OBJECT_TYPE_MISMATCH );
 }
 
 /* default ioctl() routine */
@@ -3046,7 +3014,8 @@ DECL_HANDLER(flush)
 
     if ((async = create_request_async( fd, fd->comp_flags, &req->async, 0 )))
     {
-        fd->fd_ops->flush( fd, async );
+        if (fd->fd_ops->flush) fd->fd_ops->flush( fd, async );
+        else set_error( STATUS_OBJECT_TYPE_MISMATCH );
         reply->event = async_handoff( async, NULL, 1 );
         release_object( async );
     }
@@ -3060,7 +3029,8 @@ DECL_HANDLER(get_file_info)
 
     if (fd)
     {
-        fd->fd_ops->get_file_info( fd, req->handle, req->info_class );
+        if (fd->fd_ops->get_file_info) fd->fd_ops->get_file_info( fd, req->handle, req->info_class );
+        else set_error( STATUS_OBJECT_TYPE_MISMATCH );
         release_object( fd );
     }
 }
@@ -3075,7 +3045,8 @@ DECL_HANDLER(get_volume_info)
 
     if ((async = create_request_async( fd, fd->comp_flags, &req->async, 0 )))
     {
-        fd->fd_ops->get_volume_info( fd, async, req->info_class );
+        if (fd->fd_ops->get_volume_info) fd->fd_ops->get_volume_info( fd, async, req->info_class );
+        else set_error( STATUS_OBJECT_TYPE_MISMATCH );
         reply->wait = async_handoff( async, NULL, 1 );
         release_object( async );
     }
@@ -3085,16 +3056,17 @@ DECL_HANDLER(get_volume_info)
 /* open a file object */
 DECL_HANDLER(open_file_object)
 {
-    struct unicode_str name = get_req_unicode_str();
-    struct object *obj, *result, *root = NULL;
+    struct object *obj, *result;
+    struct object_params params = { .name = get_req_unicode_str(), .attr = req->attributes };
 
-    if (req->rootdir && !(root = get_handle_obj( current->process, req->rootdir, 0, NULL ))) return;
+    if (req->rootdir && !(params.root = get_handle_obj( current->process, req->rootdir, 0, NULL ))) return;
 
-    obj = open_named_object( root, NULL, &name, req->attributes );
-    if (root) release_object( root );
+    obj = open_named_object( &params );
+    if (params.root) release_object( params.root );
     if (!obj) return;
 
-    if ((result = obj->ops->open_file( obj, req->access, req->sharing, req->options )))
+    if (!obj->ops->open_file) set_error( STATUS_OBJECT_TYPE_MISMATCH );
+    else if ((result = obj->ops->open_file( obj, req->access, req->sharing, req->options )))
     {
         reply->handle = alloc_handle( current->process, result, req->access, req->attributes );
         release_object( result );
@@ -3151,7 +3123,8 @@ DECL_HANDLER(read)
 
     if ((async = create_request_async( fd, fd->comp_flags, &req->async, 0 )))
     {
-        fd->fd_ops->read( fd, async, req->pos );
+        if (fd->fd_ops->read) fd->fd_ops->read( fd, async, req->pos );
+        else set_error( STATUS_OBJECT_TYPE_MISMATCH );
         reply->wait = async_handoff( async, NULL, 0 );
         reply->options = fd->options;
         release_object( async );
@@ -3169,7 +3142,8 @@ DECL_HANDLER(write)
 
     if ((async = create_request_async( fd, fd->comp_flags, &req->async, 0 )))
     {
-        fd->fd_ops->write( fd, async, req->pos );
+        if (fd->fd_ops->write) fd->fd_ops->write( fd, async, req->pos );
+        else set_error( STATUS_OBJECT_TYPE_MISMATCH );
         reply->wait = async_handoff( async, &reply->size, 0 );
         reply->options = fd->options;
         release_object( async );
@@ -3188,7 +3162,8 @@ DECL_HANDLER(ioctl)
 
     if ((async = create_request_async( fd, fd->comp_flags, &req->async, 0 )))
     {
-        fd->fd_ops->ioctl( fd, req->code, async );
+        if (fd->fd_ops->ioctl) fd->fd_ops->ioctl( fd, req->code, async );
+        else set_error( STATUS_OBJECT_TYPE_MISMATCH );
         reply->wait = async_handoff( async, NULL, 0 );
         reply->options = fd->options;
         release_object( async );
@@ -3218,7 +3193,8 @@ DECL_HANDLER(register_async)
 
     if ((fd = get_handle_fd_obj( current->process, req->async.handle, access )))
     {
-        if (get_unix_fd( fd ) != -1 && (async = create_async( fd, current, &req->async, NULL )))
+        if (!fd->fd_ops->queue_async) set_error( STATUS_OBJECT_TYPE_MISMATCH );
+        else if (get_unix_fd( fd ) != -1 && (async = create_async( fd, current, &req->async, NULL )))
         {
             fd->fd_ops->queue_async( fd, async, req->type, req->count );
             release_object( async );

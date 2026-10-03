@@ -27,6 +27,7 @@
 #include <libxml/parser.h>
 #include <libxml/tree.h>
 #include <atomic>
+#include <new>
 #include <windows.h>
 #include <winstring.h>
 
@@ -127,51 +128,81 @@ public:
     HRESULT WINAPI
     BuildMsaTokenRequestXml( const char *clientId, boolean allowUi, boolean fullTrust, LPSTR *xml_string ) override
     {
-        xmlNodePtr root = xmlNewNode( nullptr, BAD_CAST "MsaTokenRequest" );
-        xmlDocPtr doc = xmlNewDoc( BAD_CAST "1.0" );
+        xmlNodePtr root;
+        xmlDocPtr doc;
         xmlChar *buffer = nullptr;
-        INT bufferSize;
+        int bufferSize = 0;
+        HRESULT hr = E_OUTOFMEMORY;
 
         TRACE( "clientId %s, xml_string %p.\n", debugstr_a( clientId ), xml_string );
-
+        if (!xml_string) return E_POINTER;
+        *xml_string = nullptr;
+        if (!clientId) return E_INVALIDARG;
+        if (!(doc = xmlNewDoc( BAD_CAST "1.0" ))) return E_OUTOFMEMORY;
+        if (!(root = xmlNewNode( nullptr, BAD_CAST "MsaTokenRequest" ))) goto cleanup;
         xmlDocSetRootElement( doc, root );
-        xmlNewChild( root, nullptr, BAD_CAST "ClientId", BAD_CAST clientId );
-        xmlNewChild( root, nullptr, BAD_CAST "AllowUi", BAD_CAST (allowUi ? "true" : "false") );
-        xmlNewChild( root, nullptr, BAD_CAST "MsaFullTrust", BAD_CAST (fullTrust ? "true" : "false") );
+        if (!xmlNewTextChild( root, nullptr, BAD_CAST "ClientId", BAD_CAST clientId ) ||
+            !xmlNewTextChild( root, nullptr, BAD_CAST "AllowUi", BAD_CAST (allowUi ? "true" : "false") ) ||
+            !xmlNewTextChild( root, nullptr, BAD_CAST "MsaFullTrust", BAD_CAST (fullTrust ? "true" : "false") ))
+            goto cleanup;
 
         xmlDocDumpFormatMemory( doc, &buffer, &bufferSize, 1 );
+        if (!buffer || bufferSize <= 0) goto cleanup;
+        if (!(*xml_string = static_cast<char *>(malloc( bufferSize + 1 )))) goto cleanup;
+        memcpy( *xml_string, buffer, bufferSize );
+        (*xml_string)[bufferSize] = 0;
+        hr = S_OK;
+
+    cleanup:
+        xmlFree( buffer );
         xmlFreeDoc( doc );
-        *xml_string = reinterpret_cast<char *>(buffer);
-        return S_OK;
+        return hr;
     }
 
     HRESULT WINAPI
     FromMsaTokenResponseXml( LPCSTR xml_string, IMsaTokenResponse **response ) override
     {
         xmlNodePtr child, root;
+        xmlChar *content = nullptr;
         char *token = nullptr;
         xmlDocPtr doc;
+        HRESULT hr = E_INVALIDARG;
 
-        TRACE( "xml_string %s, response %p.\n", debugstr_a( xml_string ), response );
+        TRACE( "response %p.\n", response );
+        if (!response) return E_POINTER;
+        *response = nullptr;
+        if (!xml_string) return E_INVALIDARG;
+        if (!(doc = xmlReadMemory( xml_string, strlen( xml_string ), nullptr, nullptr, XML_PARSE_NONET )))
+            return E_INVALIDARG;
+        if (doc->intSubset || doc->extSubset) goto cleanup;
+        if (!(root = xmlDocGetRootElement( doc ))) goto cleanup;
+        if (xmlStrcmp( root->name, BAD_CAST "MSATokenResponse" ) &&
+            xmlStrcmp( root->name, BAD_CAST "MsaTokenResponse" )) goto cleanup;
 
-        if (!(doc = xmlReadMemory( xml_string, strlen( xml_string ), nullptr, nullptr, 0 ))) return E_FAIL;
-        if (!(root = xmlDocGetRootElement( doc )))
+        for (child = root->children; child; child = child->next)
+            if (child->type == XML_ELEMENT_NODE && !xmlStrcmp( child->name, BAD_CAST "Token" ))
+            {
+                content = xmlNodeGetContent( child );
+                break;
+            }
+        if (!content || !*content) goto cleanup;
+        if (!(token = strdup( reinterpret_cast<char *>(content) )))
         {
-            xmlFreeDoc( doc );
-            return E_FAIL;
+            hr = E_OUTOFMEMORY;
+            goto cleanup;
         }
+        if (!(*response = new (std::nothrow) MsaTokenResponse( token )))
+        {
+            free( token );
+            hr = E_OUTOFMEMORY;
+            goto cleanup;
+        }
+        hr = S_OK;
 
-        if (!strcmp( reinterpret_cast<const char *>(root->name), "MSATokenResponse" ))
-            for (child = root->children; child != nullptr; child = child->next)
-                if (child->type == XML_ELEMENT_NODE && !strcmp( reinterpret_cast<const char *>(child->name), "Token" ))
-                {
-                    token = reinterpret_cast<char *>(xmlNodeGetContent( child ));
-                    break;
-                }
-
-        *response = new MsaTokenResponse( token );
+    cleanup:
+        xmlFree( content );
         xmlFreeDoc( doc );
-        return S_OK;
+        return hr;
     }
 
 private:

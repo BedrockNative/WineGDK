@@ -85,8 +85,8 @@ void __stdcall XTaskQueueUnregisterMonitor( XTaskQueueHandle queue, XTaskQueueRe
 BOOLEAN __stdcall XTaskQueueGetCurrentProcessTaskQueue( XTaskQueueHandle *queue );
 void __stdcall XTaskQueueSetCurrentProcessTaskQueue( XTaskQueueHandle queue );
 HRESULT __stdcall XThreadSetTimeSensitive( BOOLEAN isTimeSensitiveThread );
-void __stdcall XThreadAssertNotTimeSensitive();
-BOOLEAN __stdcall XThreadIsTimeSensitive();
+void __stdcall XThreadAssertNotTimeSensitive(void);
+BOOLEAN __stdcall XThreadIsTimeSensitive(void);
 
 #ifdef __cplusplus
 }

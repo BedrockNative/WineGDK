@@ -28,6 +28,7 @@
 #include "robuffer.h"
 
 #include <atomic>
+#include <new>
 
 WINE_DEFAULT_DEBUG_CHANNEL(xodus);
 
@@ -110,59 +111,57 @@ public:
     }
 
     /* IIPCLayer Methods */
-    HRESULT WINAPI
-    InitializeSocket()
+    HRESULT WINAPI InitializeSocket() override
     {
-        IAsyncAction *operation;
-        TRACE("\n");
-        return AsyncAction::Create( static_cast<IUnknown *>(this), nullptr, InitializeSocketThread, &operation );
-    }
-
-    HRESULT WINAPI
-    SendRequestAsync( IXodusIPCPacket *packet, IAsyncOperation<IXodusIPCPacket *> **operation ) override
-    {
-        HRESULT hr;
-
-        packet->AddRef();        
-        hr = AsyncOperation<IXodusIPCPacket *>::Create( static_cast<IUnknown *>(this), 
-                                packet, SendRequest, operation );
-
+        IAsyncAction *operation = nullptr;
+        HRESULT hr = AsyncAction::Create( static_cast<IUnknown *>(this), nullptr,
+                                           InitializeSocketThread, &operation );
+        if (operation) operation->Release();
         return hr;
     }
 
-    HRESULT WINAPI
-    add_ResponseReceived( IIPCResponseHandler *handler, EventRegistrationToken *token ) override
+    HRESULT WINAPI SendRequestAsync( IXodusIPCPacket *packet,
+                                     IAsyncOperation<IXodusIPCPacket *> **operation ) override
     {
-        response_received_callback *newCallback = new response_received_callback();
-        newCallback->handler = handler;
+        HRESULT hr;
+        if (!operation) return E_POINTER;
+        *operation = nullptr;
+        if (!packet) return E_INVALIDARG;
+        packet->AddRef();
+        hr = AsyncOperation<IXodusIPCPacket *>::Create( static_cast<IUnknown *>(this),
+                                                       packet, SendRequest, operation );
+        if (FAILED(hr)) packet->Release();
+        return hr;
+    }
 
-        TRACE("handler %p, token %p.\n", handler, token);
-
+    HRESULT WINAPI add_ResponseReceived( IIPCResponseHandler *handler, EventRegistrationToken *token ) override
+    {
+        response_received_callback *callback;
+        if (!handler || !token) return E_POINTER;
+        if (!(callback = new (std::nothrow) response_received_callback{})) return E_OUTOFMEMORY;
+        callback->handler = handler;
         handler->AddRef();
-        token->value = m_NextEventToken++;
-        newCallback->token = token->value;
-        list_add_head( &m_Callbacks, &newCallback->entry );
-
+        callback->token = token->value = m_NextEventToken++;
+        AcquireSRWLockExclusive( &m_CallbackLock );
+        list_add_head( &m_Callbacks, &callback->entry );
+        ReleaseSRWLockExclusive( &m_CallbackLock );
         return S_OK;
     }
 
-    HRESULT WINAPI
-    remove_ResponseReceived( EventRegistrationToken token ) override
+    HRESULT WINAPI remove_ResponseReceived( EventRegistrationToken token ) override
     {
-        response_received_callback *oldCallback;
-
-        TRACE("token %lld.\n", token.value);
-
-        LIST_FOR_EACH_ENTRY( oldCallback, &m_Callbacks, response_received_callback, entry )
+        response_received_callback *callback;
+        AcquireSRWLockExclusive( &m_CallbackLock );
+        LIST_FOR_EACH_ENTRY( callback, &m_Callbacks, response_received_callback, entry )
         {
-            if ( oldCallback->token == token.value )
-            {
-                oldCallback->handler->Release();
-                list_remove( &oldCallback->entry );
-                return S_OK;
-            }
+            if (callback->token != token.value) continue;
+            list_remove( &callback->entry );
+            ReleaseSRWLockExclusive( &m_CallbackLock );
+            callback->handler->Release();
+            delete callback;
+            return S_OK;
         }
-
+        ReleaseSRWLockExclusive( &m_CallbackLock );
         return E_BOUNDS;
     }
 
@@ -177,227 +176,211 @@ private:
     struct IPCFrame
     {
         UINT32 frameSize;
-        BYTE* frame;
+        BYTE *frame;
     };
-    
+
     struct SendRequestContext
     {
         HANDLE event;
         IXodusIPCPacket *response;
+        UINT16 expectedType;
     };
 
-    static HRESULT WINAPI 
-    SendRequest( IUnknown *invoker, PVOID param, PROPVARIANT *result )
+    static HRESULT WINAPI SendRequest( IUnknown *invoker, PVOID param, PROPVARIANT *result )
     {
-        auto iface = static_cast<IPCLayer *>( invoker );
-        auto packet = static_cast<IXodusIPCPacket *>( param );
-
-        BYTE* messageBuffer;
-        DWORD asyncres;
-        HRESULT status = S_OK;
-        NTSTATUS nts;
-        IPCFrame *frame = new IPCFrame();
+        auto iface = static_cast<IPCLayer *>(invoker);
+        auto packet = static_cast<IXodusIPCPacket *>(param);
+        IBuffer *message = nullptr;
+        IBufferByteAccess *access = nullptr;
+        IPCResponseHandler *handler = nullptr;
+        BYTE *messageBuffer = nullptr;
+        IPCFrame frame{};
         IPCHeader_CTYPE header{};
         EventRegistrationToken token{};
-        SendRequestContext context{ .event = CreateEventW(nullptr, TRUE, FALSE, nullptr) };
-        IPCResponseHandler *handler = new IPCResponseHandler( SendRequestResponseHandler, (PVOID)&context );
+        SendRequestContext context{};
+        UINT32 length;
+        DWORD wait;
+        NTSTATUS status;
+        HRESULT hr;
+        bool registered = false;
 
-        IBuffer *message;
-        IBufferByteAccess *messageBufferByteAccess;
-
-        TRACE("invoker %p, param %p, result %p\n", invoker, param, result);
-
-        packet->get_Magic( &header.Magic );
-        packet->get_MessageType( &header.Message_Type );
-        packet->get_Message( &message );
-        packet->Release();
-
-        status = message->get_Length( &frame->frameSize );
-        if ( FAILED( status ) ) return status;
-        status = message->QueryInterface<IBufferByteAccess>( &messageBufferByteAccess );
-        message->Release();
-        if ( FAILED( status ) ) return status;
-        status = messageBufferByteAccess->Buffer( &messageBuffer );
-        messageBufferByteAccess->Release();
-        if ( FAILED( status ) ) return status;
-
-        header.MessageLength = frame->frameSize;
-        TRACE( "Sending Xodus message type %u, payload %u bytes.\n", header.Message_Type, header.MessageLength );
-
-        frame->frameSize += sizeof(IPCHeader_CTYPE);
-
-        frame->frame = (PBYTE)CoTaskMemAlloc( sizeof(BYTE) * frame->frameSize );
-        if ( !frame->frame )
-            return E_OUTOFMEMORY;
-
-        RtlCopyMemory( frame->frame, &header.Magic, sizeof(MagicHeaderType) );
-        RtlCopyMemory( frame->frame + sizeof(MagicHeaderType), &header.Message_Type, sizeof(UINT16) );
-        RtlCopyMemory( frame->frame + sizeof(MagicHeaderType) + sizeof(UINT16), &header.MessageLength, sizeof(UINT16) );
-        RtlCopyMemory( frame->frame + sizeof(IPCHeader_CTYPE), messageBuffer, header.MessageLength );
-
-        status = iface->add_ResponseReceived( handler, &token );
-        if ( FAILED( status ) ) return status;
-
-        nts = __wine_unix_call( unixhandle, send_frame, (void *)frame );
-        CoTaskMemFree( frame->frame );
-        delete frame;
-        if ( FAILED( nts ) ) return HRESULT_FROM_NT( nts );
-
-        asyncres = WaitForSingleObject( context.event, IPC_REQUEST_TIMEOUT_MS );
-        status = iface->remove_ResponseReceived( token );
-        handler->Release();
-        CloseHandle( context.event );
-        if ( FAILED( status ) ) return status;
-        if ( asyncres )
+        /* The protocol has no request IDs. Keep at most one request in flight. */
+        AcquireSRWLockExclusive( &iface->m_RequestLock );
+        if (FAILED(hr = packet->get_Magic( &header.Magic ))) goto cleanup;
+        if (FAILED(hr = packet->get_MessageType( &header.Message_Type ))) goto cleanup;
+        if (header.Message_Type != 1 && header.Message_Type != 3)
         {
-            WARN("Timeout while waiting for a Xodus response.\n");
-            return HRESULT_FROM_NT( STATUS_TIMEOUT );
+            hr = E_INVALIDARG;
+            goto cleanup;
         }
+        context.expectedType = header.Message_Type + 1;
+        if (FAILED(hr = packet->get_Message( &message ))) goto cleanup;
+        if (!message)
+        {
+            hr = E_INVALIDARG;
+            goto cleanup;
+        }
+        if (FAILED(hr = message->get_Length( &length ))) goto cleanup;
+        if (length > 0xffff)
+        {
+            hr = HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
+            goto cleanup;
+        }
+        if (FAILED(hr = message->QueryInterface<IBufferByteAccess>( &access ))) goto cleanup;
+        if (FAILED(hr = access->Buffer( &messageBuffer ))) goto cleanup;
+        if (length && !messageBuffer)
+        {
+            hr = E_INVALIDARG;
+            goto cleanup;
+        }
+        header.MessageLength = length;
+        frame.frameSize = sizeof(header) + length;
+        if (!(frame.frame = static_cast<BYTE *>(CoTaskMemAlloc( frame.frameSize ))))
+        {
+            hr = E_OUTOFMEMORY;
+            goto cleanup;
+        }
+        memcpy( frame.frame, &header, sizeof(header) );
+        if (length) memcpy( frame.frame + sizeof(header), messageBuffer, length );
+        if (!(context.event = CreateEventW( nullptr, TRUE, FALSE, nullptr )))
+        {
+            hr = HRESULT_FROM_WIN32( GetLastError() );
+            goto cleanup;
+        }
+        if (!(handler = new (std::nothrow) IPCResponseHandler( SendRequestResponseHandler, &context )))
+        {
+            hr = E_OUTOFMEMORY;
+            goto cleanup;
+        }
+        if (FAILED(hr = iface->add_ResponseReceived( handler, &token ))) goto cleanup;
+        registered = true;
+        status = __wine_unix_call( unixhandle, send_frame, &frame );
+        if (status)
+        {
+            hr = HRESULT_FROM_NT( status );
+            goto cleanup;
+        }
+        wait = WaitForSingleObject( context.event, IPC_REQUEST_TIMEOUT_MS );
+        if (wait == WAIT_OBJECT_0) hr = S_OK;
+        else if (wait == WAIT_TIMEOUT) hr = HRESULT_FROM_WIN32( ERROR_TIMEOUT );
+        else hr = HRESULT_FROM_WIN32( GetLastError() );
 
-        result->vt = VT_UNKNOWN;
-        result->punkVal = context.response;
-
-        return S_OK;
+    cleanup:
+        /* Removal waits for any running callback before its stack context disappears. */
+        if (registered) iface->remove_ResponseReceived( token );
+        if (SUCCEEDED(hr))
+        {
+            if (context.response)
+            {
+                result->vt = VT_UNKNOWN;
+                result->punkVal = context.response;
+                context.response = nullptr;
+            }
+            else hr = E_UNEXPECTED;
+        }
+        if (context.response) context.response->Release();
+        if (handler) handler->Release();
+        if (context.event) CloseHandle( context.event );
+        CoTaskMemFree( frame.frame );
+        if (access) access->Release();
+        if (message) message->Release();
+        packet->Release();
+        ReleaseSRWLockExclusive( &iface->m_RequestLock );
+        return hr;
     }
 
-    static HRESULT WINAPI
-    SendRequestResponseHandler( PVOID context, IXodusIPCPacket *packet )
+    static HRESULT WINAPI SendRequestResponseHandler( PVOID context, IXodusIPCPacket *packet )
     {
-        auto ctx = reinterpret_cast<SendRequestContext *>( context );
-
-        HRESULT status;
-        UINT16 messageType;
-
-        TRACE("context %p, packet %p\n", context, packet);
-
-        status = packet->get_MessageType( &messageType );
-        if ( FAILED( status ) ) return status;
-        TRACE( "Received Xodus response type %u.\n", messageType );
-
-        if ( messageType == 1 /* PING */ )
-            return S_OK; //Skip the packet we sent.
-
-        if ( messageType == 2 /* PONG */ )
-            TRACE("Got PONGED!\n");
-
+        auto ctx = static_cast<SendRequestContext *>(context);
+        UINT16 type;
+        HRESULT hr = packet->get_MessageType( &type );
+        if (FAILED(hr)) return hr;
+        if (type != ctx->expectedType || ctx->response) return S_OK;
         packet->AddRef();
         ctx->response = packet;
         SetEvent( ctx->event );
         return S_OK;
     }
 
-    static HRESULT WINAPI 
-    InitializeSocketThread( IUnknown *invoker, PVOID param, PROPVARIANT *result )
+    static HRESULT WINAPI InitializeSocketThread( IUnknown *invoker, PVOID param, PROPVARIANT *result )
     {
-        auto iface = static_cast<IPCLayer *>( invoker );
-
-        BYTE* messageBuffer = nullptr;
-        SIZE_T offset = 0;
-        HSTRING bufferClass;
-        NTSTATUS status = STATUS_SUCCESS;
-        POLL_SOCKET_ARGS currentPoll{};
-        response_received_callback *currCallback;
-
+        auto iface = static_cast<IPCLayer *>(invoker);
+        HSTRING_HEADER classHeader;
+        HSTRING className;
+        IBufferFactory *factory = nullptr;
         IBuffer *message = nullptr;
-        IBufferByteAccess *messageBufferAccess = nullptr;
-        IBufferFactory *bufferFactory = nullptr;
-        IXodusIPCPacket *xodusPacket = nullptr;
+        IBufferByteAccess *access = nullptr;
+        IXodusIPCPacket *packet = nullptr;
+        POLL_SOCKET_ARGS poll{};
+        response_received_callback *callback;
+        BYTE *buffer;
+        HRESULT hr;
+        NTSTATUS status;
+        SIZE_T offset;
 
-        TRACE("Xodus response pump started.\n");
-
-        status = WindowsCreateString( RuntimeClass_Windows_Storage_Streams_Buffer, lstrlenW( RuntimeClass_Windows_Storage_Streams_Buffer ), &bufferClass );
-        if ( FAILED( status ) ) return status;
-
-        status = RoGetActivationFactory( bufferClass, __uuidof( IBufferFactory ), (void **)&bufferFactory );
-        WindowsDeleteString( bufferClass );
-        if ( FAILED( status ) ) return status;
-
-        // Automatically broken when the DLL is detatched. 
-        while ( TRUE )
+        if (FAILED(hr = WindowsCreateStringReference( RuntimeClass_Windows_Storage_Streams_Buffer,
+                wcslen( RuntimeClass_Windows_Storage_Streams_Buffer ), &classHeader, &className ))) return hr;
+        if (FAILED(hr = RoGetActivationFactory( className, __uuidof(IBufferFactory), (void **)&factory ))) return hr;
+        for (;;)
         {
-            // poll_sock()
-            status = __wine_unix_call( unixhandle, poll_socket, (void *)&currentPoll );
-            if ( FAILED( status ) )
+            if ((status = __wine_unix_call( unixhandle, poll_socket, &poll )))
             {
-                WARN( "Xodus response pump stopped, status %#lx.\n", status );
-                return HRESULT_FROM_NT( status );
+                hr = HRESULT_FROM_NT( status );
+                goto cleanup;
             }
-            TRACE( "Xodus response pump buffered %Iu bytes.\n", currentPoll.curr_buffer_size );
-
-            // Multiple messages may arrive at the same time.
-            // Try to parse them all
             offset = 0;
-
-            while ( TRUE )
+            while (poll.curr_buffer_size - offset >= sizeof(IPCHeader_CTYPE))
             {
-                IPCHeader_CTYPE *header;
-
-                if ( currentPoll.curr_buffer_size - offset < sizeof(IPCHeader_CTYPE) )
-                    break; //Not received the full header yet.
-
-                header = reinterpret_cast<IPCHeader_CTYPE *>( currentPoll.curr_buffer + offset );
-                
-                if ( header->Magic == MagicHeaderType::Proto )
+                IPCHeader_CTYPE header;
+                memcpy( &header, poll.curr_buffer + offset, sizeof(header) );
+                if (header.Magic != MagicHeaderType::XML)
                 {
-                    FIXME("Proto is not yet supported!\n");
-                    break;
+                    hr = E_INVALIDARG;
+                    goto cleanup;
                 }
-                else if ( header->Magic != MagicHeaderType::XML )
+                if (poll.curr_buffer_size - offset < sizeof(header) + header.MessageLength) break;
+                if (FAILED(hr = factory->Create( header.MessageLength + 1, &message ))) goto cleanup;
+                if (FAILED(hr = message->QueryInterface<IBufferByteAccess>( &access ))) goto cleanup;
+                if (FAILED(hr = access->Buffer( &buffer ))) goto cleanup;
+                if (!buffer)
                 {
-                    FIXME("Invalid magic header %#x received!\n", (int)header->Magic);
-                    break;
+                    hr = E_OUTOFMEMORY;
+                    goto cleanup;
                 }
-
-                if ( currentPoll.curr_buffer_size - offset < sizeof(IPCHeader_CTYPE) + header->MessageLength )
-                    break; //We have not received the full message yet.
-                TRACE( "Dispatching Xodus response type %u, payload %u bytes.\n",
-                       header->Message_Type, header->MessageLength );
-
-                /**
-                 * TODO: Should we ignore messages sent by ourselves?
-                 * if ( header->Message_Type == MessageType::Ping ||
-                 *     header->Message_Type == MessageType::XstsTokenRequest )
-                 *    break;
-                 */
-
-                status = bufferFactory->Create( header->MessageLength + 1, &message );
-                if ( FAILED( status ) ) return status; //something went horribly wrong.
-                status = message->QueryInterface<IBufferByteAccess>( &messageBufferAccess );
-                if ( FAILED( status ) ) return status; //something went horribly wrong.
-                status = messageBufferAccess->Buffer( &messageBuffer );
-                if ( FAILED( status ) ) return status; //something went horribly wrong.
-
-                if ( !messageBuffer )
-                    return E_OUTOFMEMORY;
-
-                RtlCopyMemory( (PVOID)messageBuffer, (PVOID)(currentPoll.curr_buffer + offset + sizeof(IPCHeader_CTYPE)), header->MessageLength );
-                status = message->put_Length( static_cast<UINT32>(header->MessageLength) );
-                offset += sizeof(IPCHeader_CTYPE) + header->MessageLength;
-
-                messageBuffer[header->MessageLength] = '\0';
-
-                xodusPacket = new XodusIPCPacket( header->Magic, header->Message_Type, message );
-
-                messageBufferAccess->Release();
-
-                LIST_FOR_EACH_ENTRY( currCallback, &iface->m_Callbacks, response_received_callback, entry )
+                memcpy( buffer, poll.curr_buffer + offset + sizeof(header), header.MessageLength );
+                buffer[header.MessageLength] = 0;
+                if (FAILED(hr = message->put_Length( header.MessageLength ))) goto cleanup;
+                offset += sizeof(header) + header.MessageLength;
+                if (!(packet = new (std::nothrow) XodusIPCPacket( header.Magic, header.Message_Type, message )))
                 {
-                    currCallback->handler->Invoke( xodusPacket );
+                    hr = E_OUTOFMEMORY;
+                    goto cleanup;
                 }
-                // ---- //
-
-                xodusPacket->Release();
+                /* Keep callback context alive until dispatch finishes. */
+                AcquireSRWLockShared( &iface->m_CallbackLock );
+                LIST_FOR_EACH_ENTRY( callback, &iface->m_Callbacks, response_received_callback, entry )
+                    callback->handler->Invoke( packet );
+                ReleaseSRWLockShared( &iface->m_CallbackLock );
+                packet->Release();
+                packet = nullptr;
+                access->Release();
+                access = nullptr;
+                message->Release();
+                message = nullptr;
             }
-
-            if ( offset > 0 )
+            if (offset)
             {
-                memmove( currentPoll.curr_buffer, currentPoll.curr_buffer + offset, currentPoll.curr_buffer_size - offset );
-                currentPoll.curr_buffer_size -= offset;
+                memmove( poll.curr_buffer, poll.curr_buffer + offset, poll.curr_buffer_size - offset );
+                poll.curr_buffer_size -= offset;
             }
         }
 
-        bufferFactory->Release();
-        return S_OK;
+    cleanup:
+        if (packet) packet->Release();
+        if (access) access->Release();
+        if (message) message->Release();
+        factory->Release();
+        return hr;
     }
 
     struct response_received_callback
@@ -408,6 +391,8 @@ private:
     };
 
     struct list m_Callbacks = LIST_INIT( m_Callbacks );
+    SRWLOCK m_CallbackLock = SRWLOCK_INIT;
+    SRWLOCK m_RequestLock = SRWLOCK_INIT;
     std::atomic<INT64> m_NextEventToken{ 0 };
     std::atomic_long ref{ 1 };
 };

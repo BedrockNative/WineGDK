@@ -40,6 +40,9 @@ static HRESULT WINAPI x_game_QueryInterface( IXGameImpl3 *iface, REFIID iid, voi
 
     TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
 
+    if (!out) return E_POINTER;
+    *out = NULL;
+
     if (IsEqualGUID( iid, &IID_IUnknown    ) ||
         IsEqualGUID( iid, &IID_IXGameImpl  ) ||
         IsEqualGUID( iid, &IID_IXGameImpl2 ) ||
@@ -73,6 +76,7 @@ static ULONG WINAPI x_game_Release( IXGameImpl3 *iface )
 static HRESULT WINAPI x_game_XGameGetXboxTitleId( IXGameImpl3 *iface, UINT32 *value )
 {
     TRACE( "iface %p, value %p.\n", iface, value );
+    if (!value) return E_POINTER;
     *value = titleId;
     return S_OK;
 }

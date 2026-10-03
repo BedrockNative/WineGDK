@@ -50,6 +50,7 @@
 #include <xgameerr.h>
 #include <xsystem.h>
 #include <xgame.h>
+#include <xlauncher.h>
 #include <xgameruntimefeature.h>
 #include <xnetworking.h>
 #include <xuser.h>
@@ -57,7 +58,13 @@
 #include <xasyncprovider.h>
 #include <xlauncher.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "wine/unixlib.h"
+#ifdef __cplusplus
+}
+#endif
 #include "wine/debug.h"
 
 #define WIDL_using_Windows_Foundation
@@ -101,8 +108,10 @@
 /* OrionBE: 5 s was shorter than a slow DNS lookup (login.live.com) and made the game crash; allow up to 60 s. */
 #define IPC_REQUEST_TIMEOUT_MS 60000
 #define XODUS_INTEROP 1
+#endif
 
 extern BOOLEAN initializeCalled;
+extern BOOLEAN xodusAvailable;
 
 extern char *msaAppId;
 extern UINT32 titleId;
@@ -153,6 +162,7 @@ enum unix_funcs
 
 EXTERN_C unixlib_handle_t unixhandle;
 
+
 typedef HRESULT (WINAPI *async_operation_callback)( IUnknown *invoker, PVOID param, PROPVARIANT *result );
 
 #define DEFINE_ASYNC_COMPLETED_HANDLER( name, iface_type, async_type )                              \
@@ -171,6 +181,9 @@ typedef HRESULT (WINAPI *async_operation_callback)( IUnknown *invoker, PVOID par
                                                                                                     \
     static HRESULT WINAPI name##_QueryInterface( iface_type *iface, REFIID iid, void **out )        \
     {                                                                                               \
+        if (!out) return E_POINTER;                                                                             \
+        *out = NULL;                                                                                \
+        if (!iid) return E_INVALIDARG;                                                                          \
         if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IAgileObject ) ||           \
             IsEqualGUID( iid, &IID_##iface_type ))                                                  \
         {                                                                                           \
@@ -193,7 +206,7 @@ typedef HRESULT (WINAPI *async_operation_callback)( IUnknown *invoker, PVOID par
     {                                                                                               \
         struct name *impl = CONTAINING_RECORD( iface, struct name, iface_type##_iface );            \
         ULONG ref = InterlockedDecrement( &impl->refcount );                                        \
-        if (!ref) free( impl );                                                                     \
+        if (!ref) { CloseHandle( impl->event ); free( impl ); }                                                 \
         return ref;                                                                                 \
     }                                                                                               \
                                                                                                     \
@@ -222,7 +235,8 @@ typedef HRESULT (WINAPI *async_operation_callback)( IUnknown *invoker, PVOID par
                                                                                                     \
         if (!(impl = calloc( 1, sizeof(*impl) ))) return NULL;                                      \
         impl->iface_type##_iface.lpVtbl = &name##_vtbl;                                             \
-        impl->event = event;                                                                        \
+        if (!DuplicateHandle( GetCurrentProcess(), event, GetCurrentProcess(), &impl->event, 0, FALSE, DUPLICATE_SAME_ACCESS ))\
+        { free( impl ); return NULL; }                                                                          \
         impl->refcount = 1;                                                                         \
                                                                                                     \
         return &impl->iface_type##_iface;                                                           \
@@ -235,10 +249,13 @@ typedef HRESULT (WINAPI *async_operation_callback)( IUnknown *invoker, PVOID par
         HRESULT hr;                                                                                 \
         DWORD ret;                                                                                  \
                                                                                                     \
+        if (!async) return E_POINTER;                                                                           \
         event = CreateEventW( NULL, FALSE, FALSE, NULL );                                           \
+        if (!event) return HRESULT_FROM_WIN32( GetLastError() );                                                \
         handler = name##_create( event );                                                           \
+        if (!handler) { CloseHandle( event ); return E_OUTOFMEMORY; }                                           \
         hr = async_type##_put_Completed( async, handler );                                          \
-        if ( FAILED( hr ) ) return hr;                                                              \
+        if (FAILED(hr)) { iface_type##_Release( handler ); CloseHandle( event ); return hr; }                   \
         ret = WaitForSingleObject( event, timeout );                                                \
         CloseHandle( event );                                                                       \
         iface_type##_Release( handler );                                                            \
