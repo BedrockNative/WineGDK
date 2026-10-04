@@ -526,6 +526,28 @@ static void format_exception_msg( const EXCEPTION_POINTERS *ptr, char *buffer, i
 }
 
 
+
+/* Do not change the console policy of a custom AeDebug debugger. */
+static BOOL is_winedbg_auto(const WCHAR *command)
+{
+    const WCHAR *name, *end, *p;
+    BOOL quoted;
+    size_t length;
+
+    while (*command == ' ' || *command == '\t') command++;
+    quoted = *command == '"';
+    name = command + quoted;
+    for (end = name; *end && (quoted ? *end != '"' : *end != ' ' && *end != '\t'); end++)
+        if (*end == '\\' || *end == '/') name = end + 1;
+    length = end - name;
+    if (!((length == 7 && !_wcsnicmp(name, L"winedbg", 7)) ||
+          (length == 11 && !_wcsnicmp(name, L"winedbg.exe", 11)))) return FALSE;
+    p = end + (quoted && *end == '"');
+    while (*p == ' ' || *p == '\t') p++;
+    return !wcsncmp(p, L"--auto", 6) && (p[6] == ' ' || p[6] == '\t');
+}
+
+
 /******************************************************************
  *		start_debugger
  *
@@ -538,6 +560,7 @@ static BOOL start_debugger( EXCEPTION_POINTERS *epointers, HANDLE event )
     WCHAR *cmdline, *env, *p, *format = NULL;
     HANDLE dbg_key;
     DWORD autostart = TRUE;
+    DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT;
     PROCESS_INFORMATION	info;
     STARTUPINFOW startup;
     BOOL ret = FALSE;
@@ -638,7 +661,7 @@ static BOOL start_debugger( EXCEPTION_POINTERS *epointers, HANDLE event )
                 WCHAR *next = p + lstrlenW(p);
                 WCHAR *end = next + 1;
                 while (*end) end += lstrlenW(end) + 1;
-                memmove( p + 10, next, end + 1 - next );
+                memmove( p + 10, next, (end + 1 - next) * sizeof(WCHAR) );
                 break;
             }
         }
@@ -649,7 +672,16 @@ static BOOL start_debugger( EXCEPTION_POINTERS *epointers, HANDLE event )
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESHOWWINDOW;
     startup.wShowWindow = SW_SHOWNORMAL;
-    ret = CreateProcessW( NULL, cmdline, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, env, NULL, &startup, &info );
+    if (GetEnvironmentVariableW( L"WINEDBG_LOG", NULL, 0 ) > 1 && is_winedbg_auto(cmdline))
+    {
+        creation_flags |= DETACHED_PROCESS;
+        startup.dwFlags |= STARTF_USESTDHANDLES;
+        startup.wShowWindow = SW_HIDE;
+        startup.hStdInput = GetStdHandle( STD_INPUT_HANDLE );
+        startup.hStdOutput = GetStdHandle( STD_OUTPUT_HANDLE );
+        startup.hStdError = GetStdHandle( STD_ERROR_HANDLE );
+    }
+    ret = CreateProcessW( NULL, cmdline, NULL, NULL, TRUE, creation_flags, env, NULL, &startup, &info );
     FreeEnvironmentStringsW( env );
 
     if (ret)

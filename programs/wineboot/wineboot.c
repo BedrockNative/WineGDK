@@ -71,6 +71,7 @@
 #include <wine/list.h>
 #include <wine/asm.h>
 #include <wine/debug.h>
+#include <wine/log_output.h>
 
 #include <shlobj.h>
 #include <shobjidl.h>
@@ -86,6 +87,13 @@ WINE_DEFAULT_DEBUG_CHANNEL(wineboot);
 extern BOOL shutdown_close_windows( BOOL force );
 extern BOOL shutdown_all_desktops( BOOL force );
 extern void kill_processes( BOOL kill_desktop );
+
+static struct wine_log_output progress_output;
+
+static void progress_event(const char *event, const char *stage, DWORD code)
+{
+    wine_log_output_event(&progress_output, "wineboot", event, stage, code);
+}
 
 static WCHAR windowsdir[MAX_PATH];
 static const BOOL is_64bit = sizeof(void *) > sizeof(int);
@@ -142,13 +150,22 @@ static BOOL update_timestamp( const WCHAR *config_dir, unsigned long timestamp )
     }
     else
     {
-        if (errno != ENOENT) goto done;
-        if ((fd = _wopen( file, O_WRONLY | O_CREAT | O_TRUNC, 0666 )) == -1) goto done;
+        if (errno != ENOENT)
+        {
+            progress_event("error", "timestamp-open", errno);
+            goto done;
+        }
+        if ((fd = _wopen( file, O_WRONLY | O_CREAT | O_TRUNC, 0666 )) == -1)
+        {
+            progress_event("error", "timestamp-create", errno);
+            goto done;
+        }
     }
 
     count = sprintf( buffer, "%lu\n", timestamp );
     if (write( fd, buffer, count ) != count)
     {
+        progress_event("error", "timestamp-write", errno);
         WINE_WARN( "failed to update timestamp in %s\n", debugstr_w(file) );
         chsize( fd, 0 );
     }
@@ -1535,9 +1552,9 @@ static HWND show_wait_window(void)
 
     /* Launchers can show progress in their own UI without disabling graphics
      * drivers or skipping prefix setup. Diagnostics remain on stderr. */
-    if (hide && !wcscmp( hide, L"1" ))
+    if (progress_output.enabled || (hide && !wcscmp( hide, L"1" )))
     {
-        TRACE( "Prefix update wait dialog suppressed by WINEBOOT_HIDE_DIALOG.\n" );
+        TRACE( "Prefix update wait dialog suppressed by environment.\n" );
         return NULL;
     }
     hwnd = CreateDialogParamW( GetModuleHandleW(0), MAKEINTRESOURCEW(IDD_WAITDLG), 0,
@@ -1672,25 +1689,36 @@ static void update_wineprefix( BOOL force )
     int fd;
     struct stat st;
 
+    progress_event("begin", "prefix-check", 0);
     if (!inf_path)
     {
+        progress_event("error", "wine.inf", ERROR_FILE_NOT_FOUND);
         WINE_MESSAGE( "wine: failed to update %s, wine.inf not found\n", debugstr_w( config_dir ));
-        return;
+        goto done;
     }
     if ((fd = _wopen( inf_path, O_RDONLY )) == -1)
     {
+        progress_event("error", "wine.inf-open", errno);
         WINE_MESSAGE( "wine: failed to update %s with %s: %s\n",
                       debugstr_w(config_dir), debugstr_w(inf_path), strerror(errno) );
         goto done;
     }
-    fstat( fd, &st );
+    if (fstat( fd, &st ))
+    {
+        progress_event("error", "wine.inf-stat", errno);
+        close(fd);
+        goto done;
+    }
     close( fd );
 
     if (update_timestamp( config_dir, st.st_mtime ) || force)
     {
         HANDLE process;
-        DWORD count = 0;
+        DWORD count = 0, exit_code;
+        const char *stage = "preinstall";
 
+        progress_event("begin", "prefix-update", 0);
+        progress_event("begin", stage, 0);
         if ((process = start_rundll32( inf_path, L"PreInstall", IMAGE_FILE_MACHINE_TARGET_HOST )))
         {
             HWND hwnd = show_wait_window();
@@ -1705,37 +1733,58 @@ static void update_wineprefix( BOOL force )
                         while (PeekMessageW( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageW( &msg );
                         continue;
                     }
+                    if (GetExitCodeProcess(process, &exit_code))
+                        progress_event(exit_code ? "error" : "end", stage, exit_code);
+                    else progress_event("error", stage, GetLastError());
                     CloseHandle( process );
                 }
                 if (!machines[count].Machine) break;
+                stage = machines[count].Native ? "install-native" : "install-wow64";
+                progress_event("begin", stage, 0);
                 if (machines[count].Native)
                     process = start_rundll32( inf_path, L"DefaultInstall", IMAGE_FILE_MACHINE_TARGET_HOST );
                 else
                     process = start_rundll32( inf_path, L"Wow64Install", machines[count].Machine );
+                if (!process) progress_event("error", stage, GetLastError());
                 count++;
             }
-            DestroyWindow( hwnd );
+            if (hwnd) DestroyWindow( hwnd );
         }
+        else progress_event("error", stage, GetLastError());
         /* The redistributable has an x64 service and a WoW64 client. */
         if (machines[0].Machine == IMAGE_FILE_MACHINE_AMD64)
         {
             WCHAR *gameinput_inf = get_wine_inf_path( L"gameinput.inf" );
 
-            if (gameinput_inf && GetFileAttributesW( gameinput_inf ) != INVALID_FILE_ATTRIBUTES &&
-                (process = start_rundll32( gameinput_inf, L"DefaultInstall", IMAGE_FILE_MACHINE_TARGET_HOST )))
+            if (gameinput_inf && GetFileAttributesW( gameinput_inf ) != INVALID_FILE_ATTRIBUTES)
             {
-                WaitForSingleObject( process, INFINITE );
-                CloseHandle( process );
+                progress_event("begin", "gameinput", 0);
+                if ((process = start_rundll32( gameinput_inf, L"DefaultInstall", IMAGE_FILE_MACHINE_TARGET_HOST )))
+                {
+                    WaitForSingleObject( process, INFINITE );
+                    if (GetExitCodeProcess(process, &exit_code))
+                        progress_event(exit_code ? "error" : "end", "gameinput", exit_code);
+                    else progress_event("error", "gameinput", GetLastError());
+                    CloseHandle( process );
+                }
+                else progress_event("error", "gameinput", GetLastError());
             }
             free( gameinput_inf );
         }
+        progress_event("begin", "devices", 0);
         install_root_pnp_devices();
+        progress_event("end", "devices", 0);
+        progress_event("begin", "user-profile", 0);
         update_user_profile();
+        progress_event("end", "user-profile", 0);
+        progress_event("end", "prefix-update", 0);
 
         TRACE( "wine: configuration in %s has been updated.\n", debugstr_w(prettyprint_configdir()) );
     }
+    else progress_event("skip", "prefix-update", 0);
 
 done:
+    progress_event("end", "prefix-check", 0);
     free( inf_path );
 }
 
@@ -1919,6 +1968,9 @@ int __cdecl main( int argc, char *argv[] )
 
     if (shutdown) return 0;
 
+    wine_log_output_open(&progress_output, L"WINEBOOT_LOG");
+    progress_event("begin", "boot", 0);
+
     if (NtQuerySystemInformationEx( SystemSupportedProcessorArchitectures, &process, sizeof(process),
                                     machines, sizeof(machines), NULL )) machines[0].Machine = 0;
 
@@ -1928,6 +1980,7 @@ int __cdecl main( int argc, char *argv[] )
 
     ResetEvent( event );  /* in case this is a restart */
 
+    progress_event("begin", "registry", 0);
     create_user_shared_data();
     create_hardware_registry_keys();
     create_dynamic_registry_keys();
@@ -1938,10 +1991,13 @@ int __cdecl main( int argc, char *argv[] )
     ProcessWindowsFileProtection();
     ProcessRunKeys( HKEY_LOCAL_MACHINE, L"RunServicesOnce", TRUE, FALSE );
 
+    progress_event("end", "registry", 0);
     if (init || (kill && !restart))
     {
         ProcessRunKeys( HKEY_LOCAL_MACHINE, L"RunServices", FALSE, FALSE );
+        progress_event("begin", "services-start", 0);
         start_services_process();
+        progress_event("end", "services-start", 0);
     }
     if (init || update) update_wineprefix( update );
 
@@ -1961,6 +2017,8 @@ int __cdecl main( int argc, char *argv[] )
 
     WINE_TRACE("Operation done\n");
 
+    progress_event("end", "boot", 0);
+    wine_log_output_close(&progress_output);
     SetEvent( event );
     return 0;
 }

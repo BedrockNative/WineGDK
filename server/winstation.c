@@ -231,6 +231,8 @@ int set_input_desktop( struct winstation *winstation, struct desktop *new_deskto
             set_rawinput_process( thread->process, 1 );
     }
 
+    wnf_set_foreground_process( new_desktop ? new_desktop->foreground_pid : 0 );
+
     return 1;
 }
 

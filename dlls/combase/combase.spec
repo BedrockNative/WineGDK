@@ -1,63 +1,63 @@
-@ stub ObjectStublessClient3
-@ stub ObjectStublessClient4
-@ stub ObjectStublessClient5
-@ stub ObjectStublessClient6
-@ stub ObjectStublessClient7
-@ stub ObjectStublessClient8
-@ stub ObjectStublessClient9
-@ stub ObjectStublessClient10
-@ stub ObjectStublessClient11
-@ stub ObjectStublessClient12
-@ stub ObjectStublessClient13
-@ stub ObjectStublessClient14
-@ stub ObjectStublessClient15
-@ stub ObjectStublessClient16
-@ stub ObjectStublessClient17
-@ stub ObjectStublessClient18
-@ stub ObjectStublessClient19
-@ stub ObjectStublessClient20
-@ stub ObjectStublessClient21
-@ stub ObjectStublessClient22
-@ stub ObjectStublessClient23
-@ stub ObjectStublessClient24
-@ stub ObjectStublessClient25
-@ stub ObjectStublessClient26
-@ stub ObjectStublessClient27
-@ stub ObjectStublessClient28
-@ stub ObjectStublessClient29
-@ stub ObjectStublessClient30
-@ stub ObjectStublessClient31
-@ stub ObjectStublessClient32
-@ stub NdrProxyForwardingFunction3
-@ stub NdrProxyForwardingFunction4
-@ stub NdrProxyForwardingFunction5
-@ stub NdrProxyForwardingFunction6
-@ stub NdrProxyForwardingFunction7
-@ stub NdrProxyForwardingFunction8
-@ stub NdrProxyForwardingFunction9
-@ stub NdrProxyForwardingFunction10
-@ stub NdrProxyForwardingFunction11
-@ stub NdrProxyForwardingFunction12
-@ stub NdrProxyForwardingFunction13
-@ stub NdrProxyForwardingFunction14
-@ stub NdrProxyForwardingFunction15
-@ stub NdrProxyForwardingFunction16
-@ stub NdrProxyForwardingFunction17
-@ stub NdrProxyForwardingFunction18
-@ stub NdrProxyForwardingFunction19
-@ stub NdrProxyForwardingFunction20
-@ stub NdrProxyForwardingFunction21
-@ stub NdrProxyForwardingFunction22
-@ stub NdrProxyForwardingFunction23
-@ stub NdrProxyForwardingFunction24
-@ stub NdrProxyForwardingFunction25
-@ stub NdrProxyForwardingFunction26
-@ stub NdrProxyForwardingFunction27
-@ stub NdrProxyForwardingFunction28
-@ stub NdrProxyForwardingFunction29
-@ stub NdrProxyForwardingFunction30
-@ stub NdrProxyForwardingFunction31
-@ stub NdrProxyForwardingFunction32
+@ cdecl -norelay ObjectStublessClient3() rpcrt4.ObjectStublessClient3
+@ cdecl -norelay ObjectStublessClient4() rpcrt4.ObjectStublessClient4
+@ cdecl -norelay ObjectStublessClient5() rpcrt4.ObjectStublessClient5
+@ cdecl -norelay ObjectStublessClient6() rpcrt4.ObjectStublessClient6
+@ cdecl -norelay ObjectStublessClient7() rpcrt4.ObjectStublessClient7
+@ cdecl -norelay ObjectStublessClient8() rpcrt4.ObjectStublessClient8
+@ cdecl -norelay ObjectStublessClient9() rpcrt4.ObjectStublessClient9
+@ cdecl -norelay ObjectStublessClient10() rpcrt4.ObjectStublessClient10
+@ cdecl -norelay ObjectStublessClient11() rpcrt4.ObjectStublessClient11
+@ cdecl -norelay ObjectStublessClient12() rpcrt4.ObjectStublessClient12
+@ cdecl -norelay ObjectStublessClient13() rpcrt4.ObjectStublessClient13
+@ cdecl -norelay ObjectStublessClient14() rpcrt4.ObjectStublessClient14
+@ cdecl -norelay ObjectStublessClient15() rpcrt4.ObjectStublessClient15
+@ cdecl -norelay ObjectStublessClient16() rpcrt4.ObjectStublessClient16
+@ cdecl -norelay ObjectStublessClient17() rpcrt4.ObjectStublessClient17
+@ cdecl -norelay ObjectStublessClient18() rpcrt4.ObjectStublessClient18
+@ cdecl -norelay ObjectStublessClient19() rpcrt4.ObjectStublessClient19
+@ cdecl -norelay ObjectStublessClient20() rpcrt4.ObjectStublessClient20
+@ cdecl -norelay ObjectStublessClient21() rpcrt4.ObjectStublessClient21
+@ cdecl -norelay ObjectStublessClient22() rpcrt4.ObjectStublessClient22
+@ cdecl -norelay ObjectStublessClient23() rpcrt4.ObjectStublessClient23
+@ cdecl -norelay ObjectStublessClient24() rpcrt4.ObjectStublessClient24
+@ cdecl -norelay ObjectStublessClient25() rpcrt4.ObjectStublessClient25
+@ cdecl -norelay ObjectStublessClient26() rpcrt4.ObjectStublessClient26
+@ cdecl -norelay ObjectStublessClient27() rpcrt4.ObjectStublessClient27
+@ cdecl -norelay ObjectStublessClient28() rpcrt4.ObjectStublessClient28
+@ cdecl -norelay ObjectStublessClient29() rpcrt4.ObjectStublessClient29
+@ cdecl -norelay ObjectStublessClient30() rpcrt4.ObjectStublessClient30
+@ cdecl -norelay ObjectStublessClient31() rpcrt4.ObjectStublessClient31
+@ cdecl -norelay ObjectStublessClient32() rpcrt4.ObjectStublessClient32
+@ cdecl -norelay NdrProxyForwardingFunction3() rpcrt4.NdrProxyForwardingFunction3
+@ cdecl -norelay NdrProxyForwardingFunction4() rpcrt4.NdrProxyForwardingFunction4
+@ cdecl -norelay NdrProxyForwardingFunction5() rpcrt4.NdrProxyForwardingFunction5
+@ cdecl -norelay NdrProxyForwardingFunction6() rpcrt4.NdrProxyForwardingFunction6
+@ cdecl -norelay NdrProxyForwardingFunction7() rpcrt4.NdrProxyForwardingFunction7
+@ cdecl -norelay NdrProxyForwardingFunction8() rpcrt4.NdrProxyForwardingFunction8
+@ cdecl -norelay NdrProxyForwardingFunction9() rpcrt4.NdrProxyForwardingFunction9
+@ cdecl -norelay NdrProxyForwardingFunction10() rpcrt4.NdrProxyForwardingFunction10
+@ cdecl -norelay NdrProxyForwardingFunction11() rpcrt4.NdrProxyForwardingFunction11
+@ cdecl -norelay NdrProxyForwardingFunction12() rpcrt4.NdrProxyForwardingFunction12
+@ cdecl -norelay NdrProxyForwardingFunction13() rpcrt4.NdrProxyForwardingFunction13
+@ cdecl -norelay NdrProxyForwardingFunction14() rpcrt4.NdrProxyForwardingFunction14
+@ cdecl -norelay NdrProxyForwardingFunction15() rpcrt4.NdrProxyForwardingFunction15
+@ cdecl -norelay NdrProxyForwardingFunction16() rpcrt4.NdrProxyForwardingFunction16
+@ cdecl -norelay NdrProxyForwardingFunction17() rpcrt4.NdrProxyForwardingFunction17
+@ cdecl -norelay NdrProxyForwardingFunction18() rpcrt4.NdrProxyForwardingFunction18
+@ cdecl -norelay NdrProxyForwardingFunction19() rpcrt4.NdrProxyForwardingFunction19
+@ cdecl -norelay NdrProxyForwardingFunction20() rpcrt4.NdrProxyForwardingFunction20
+@ cdecl -norelay NdrProxyForwardingFunction21() rpcrt4.NdrProxyForwardingFunction21
+@ cdecl -norelay NdrProxyForwardingFunction22() rpcrt4.NdrProxyForwardingFunction22
+@ cdecl -norelay NdrProxyForwardingFunction23() rpcrt4.NdrProxyForwardingFunction23
+@ cdecl -norelay NdrProxyForwardingFunction24() rpcrt4.NdrProxyForwardingFunction24
+@ cdecl -norelay NdrProxyForwardingFunction25() rpcrt4.NdrProxyForwardingFunction25
+@ cdecl -norelay NdrProxyForwardingFunction26() rpcrt4.NdrProxyForwardingFunction26
+@ cdecl -norelay NdrProxyForwardingFunction27() rpcrt4.NdrProxyForwardingFunction27
+@ cdecl -norelay NdrProxyForwardingFunction28() rpcrt4.NdrProxyForwardingFunction28
+@ cdecl -norelay NdrProxyForwardingFunction29() rpcrt4.NdrProxyForwardingFunction29
+@ cdecl -norelay NdrProxyForwardingFunction30() rpcrt4.NdrProxyForwardingFunction30
+@ cdecl -norelay NdrProxyForwardingFunction31() rpcrt4.NdrProxyForwardingFunction31
+@ cdecl -norelay NdrProxyForwardingFunction32() rpcrt4.NdrProxyForwardingFunction32
 @ stub NdrOleInitializeExtension
 @ stdcall RoFailFastWithErrorContextInternal2(long long ptr)
 @ stub RoFailFastWithErrorContextInternal

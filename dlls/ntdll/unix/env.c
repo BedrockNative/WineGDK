@@ -24,6 +24,7 @@
 #endif
 
 #include "config.h"
+#include "wine/startup.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -1558,9 +1559,11 @@ static void run_wineboot( WCHAR *env, SIZE_T size )
     init_unicode_string( &nameW, eventW );
     InitializeObjectAttributes( &attr, &nameW, OBJ_OPENIF, 0, NULL );
     status = NtCreateEvent( &handles[0], EVENT_ALL_ACCESS, &attr, NotificationEvent, 0 );
+    wine_startup_event("prefix_wait_begin", status == STATUS_OBJECT_NAME_EXISTS ? "existing-boot" : "new-boot", status);
     if (status == STATUS_OBJECT_NAME_EXISTS) goto wait;
     if (status)
     {
+        wine_startup_event("prefix_wait_error", "create-event", status);
         ERR( "failed to create wineboot event, expect trouble\n" );
         return;
     }
@@ -1591,6 +1594,7 @@ static void run_wineboot( WCHAR *env, SIZE_T size )
 
     if (status)
     {
+        wine_startup_event("prefix_wait_error", "start-wineboot", status);
         ERR( "failed to start wineboot %x\n", status );
         NtClose( handles[0] );
         return;
@@ -1601,8 +1605,9 @@ static void run_wineboot( WCHAR *env, SIZE_T size )
 
 wait:
     timeout.QuadPart = (ULONGLONG)5 * 60 * 1000 * -10000;
-    if (NtWaitForMultipleObjects( count, handles, WaitAny, FALSE, &timeout ) == WAIT_TIMEOUT)
-        ERR( "boot event wait timed out\n" );
+    status = NtWaitForMultipleObjects( count, handles, WaitAny, FALSE, &timeout );
+    wine_startup_event("prefix_wait_end", status == WAIT_OBJECT_0 ? "boot-signaled" : "boot-not-signaled", status);
+    if (status == WAIT_TIMEOUT) ERR( "boot event wait timed out\n" );
     while (count) NtClose( handles[--count] );
 }
 

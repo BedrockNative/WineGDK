@@ -1142,7 +1142,9 @@ SOURCES = \
 	wine/irot.idl \
 	wine/irpcss.idl \
 	wine/itss.idl \
+	wine/json.h \
 	wine/list.h \
+	wine/log_output.h \
 	wine/mfinternal.idl \
 	wine/mmsystem16.h \
 	wine/mscvpdb.h \
@@ -1154,6 +1156,7 @@ SOURCES = \
 	wine/rbtree.h \
 	wine/schrpc.idl \
 	wine/server.h \
+	wine/startup.h \
 	wine/server_protocol.h \
 	wine/strmbase.h \
 	wine/svcctl.idl \
@@ -1262,6 +1265,7 @@ SOURCES = \
 	xaudio2fx.idl \
 	xgameruntimefeature.idl \
 	xcmc.h \
+	xerror.idl \
 	xgame.idl \
 	xinput.h \
 	xlauncher.idl \

@@ -4661,9 +4661,22 @@ typedef struct _ALPC_PORT_ATTRIBUTES
 #endif
 } ALPC_PORT_ATTRIBUTES, *PALPC_PORT_ATTRIBUTES;
 
+/* Windows Notification Facility */
+typedef ULONGLONG WNF_STATE_NAME;
+typedef ULONG WNF_CHANGE_STAMP;
+typedef struct _WNF_TYPE_ID { GUID TypeId; } WNF_TYPE_ID;
+typedef NTSTATUS (WINAPI *PWNF_USER_CALLBACK)(WNF_STATE_NAME,WNF_CHANGE_STAMP,
+                                             WNF_TYPE_ID *,void *,const void *,ULONG);
+
 /***********************************************************************
  * Function declarations
  */
+
+NTSYSAPI NTSTATUS WINAPI NtQueryWnfStateData(const WNF_STATE_NAME *,const WNF_TYPE_ID *,const void *,
+                                          WNF_CHANGE_STAMP *,void *,ULONG *);
+NTSYSAPI NTSTATUS WINAPI RtlSubscribeWnfStateChangeNotification(void **,WNF_STATE_NAME,WNF_CHANGE_STAMP,
+                                                              PWNF_USER_CALLBACK,void *,const WNF_TYPE_ID *,ULONG,ULONG);
+NTSYSAPI NTSTATUS WINAPI RtlUnsubscribeWnfStateChangeNotification(void *);
 
 NTSYSAPI SIZE_T    WINAPI AlpcGetHeaderSize(ULONG);
 NTSYSAPI void *    WINAPI AlpcGetMessageAttribute(ALPC_MESSAGE_ATTRIBUTES *,ULONG);

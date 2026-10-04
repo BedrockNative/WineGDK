@@ -25,6 +25,21 @@ Restart only, don't do normal startup operations.
 Shutdown only, don't reboot.
 .IP \fB\-u\fR,\fB\ \-\-update
 Update the WINEPREFIX.
+.SH ENVIRONMENT
+.IP \fBWINEBOOT_LOG\fR
+Append UTF-8 JSON lines describing boot and prefix-update stages to this file,
+and suppress the prefix-update wait dialog. Absolute Unix and Windows paths are
+accepted. A value of the form \fBunix:/path/to/socket\fR connects to an existing
+AF_UNIX stream listener, with one connection per wineboot operation.
+Unavailable or disconnected destinations fall back to stderr without showing the
+wait dialog. Socket connection and stalled-write waits are limited to two seconds.
+Unset or empty retains normal behavior. Events describe stages, not percentages;
+completion of a stage does not guarantee every nested operation succeeded.
+.IP \fBWINEBOOT_HIDE_DIALOG\fR
+Set to \fB1\fR to hide the prefix-update wait dialog without redirecting progress.
+.IP \fBWINE_STARTUP_LOG\fR
+See wine(1) for process and window startup milestones. This option alone does not
+suppress the prefix dialog.
 .SH BUGS
 Bugs can be reported on the
 .UR https://bugs.winehq.org

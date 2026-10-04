@@ -23,6 +23,8 @@
 #include "debugger.h"
 
 #include "winternl.h"
+#include "winsock2.h"
+#include "wine/log_output.h"
 #include "wine/debug.h"
 
 /* TODO list:
@@ -86,12 +88,34 @@ struct list             dbg_process_list = LIST_INIT(dbg_process_list);
 
 struct dbg_internal_var         dbg_internal_vars[DBG_IV_LAST];
 
+static BOOL output_redirected;
+static struct wine_log_output log_output;
+
+static void close_redirected_output(void)
+{
+    wine_log_output_close(&log_output);
+}
+
+static BOOL init_redirected_output(void)
+{
+    output_redirected = wine_log_output_open(&log_output, L"WINEDBG_LOG");
+    if (output_redirected) atexit(close_redirected_output);
+    return output_redirected;
+}
+
+static void write_output(const char *buffer, DWORD length)
+{
+    DWORD written;
+    if (output_redirected) wine_log_output_write(&log_output, buffer, length);
+    else WriteFile(dbg_houtput, buffer, length, &written, NULL);
+}
+
 static void dbg_outputA(const char* buffer, int len)
 {
     static char line_buff[4096];
     static unsigned int line_pos;
 
-    DWORD w, i;
+    DWORD i;
 
     while (len > 0)
     {
@@ -106,7 +130,7 @@ static void dbg_outputA(const char* buffer, int len)
             if (len > 0) i = line_pos;  /* buffer is full, flush anyway */
             else break;
         }
-        WriteFile(dbg_houtput, line_buff, i, &w, NULL);
+        write_output(line_buff, i);
         memmove( line_buff, line_buff + i, line_pos - i );
         line_pos -= i;
     }
@@ -616,6 +640,7 @@ static BOOL WINAPI ctrl_c_handler(DWORD dwCtrlType)
 
 void dbg_init_console(void)
 {
+    if (output_redirected) return;
     /* set the output handle */
     dbg_houtput = GetStdHandle(STD_OUTPUT_HANDLE);
 
@@ -730,6 +755,7 @@ int main(int argc, char** argv)
         if (retv == -1) dbg_winedbg_usage(FALSE);
         return retv;
     }
+    if (argc && !strcmp(argv[0], "--auto") && init_redirected_output()) DBG_IVAR(ShowCrashDialog) = FALSE;
     dbg_init_console();
 
     SymSetOptions((SymGetOptions() & ~(SYMOPT_UNDNAME)) |

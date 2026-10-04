@@ -48,6 +48,7 @@
 #define WIDL_EXPLICIT_AGGREGATE_RETURNS
 
 #include <xgameerr.h>
+#include <xerror.h>
 #include <xsystem.h>
 #include <xgame.h>
 #include <xlauncher.h>
@@ -111,12 +112,18 @@ extern "C" {
 
 extern BOOLEAN initializeCalled;
 extern BOOLEAN xodusAvailable;
+EXTERN_C BOOLEAN xodusSessionCacheAvailable;
+EXTERN_C HRESULT xodus_session_cache( const char *operation, const char *puid,
+                                     LONGLONG expiry, const char *input, char **output,
+                                     LONGLONG *returned_expiry );
 
 extern char *msaAppId;
 extern UINT32 titleId;
 extern BOOLEAN fullTrust;
 
 /* C linkage so main.c and C++ translation units share the same symbols. */
+EXTERN_C IXErrorImpl *x_error_impl;
+EXTERN_C HRESULT WINAPI x_error_report( HRESULT status, const char *message );
 EXTERN_C IXThreadingImpl *x_threading_impl;
 EXTERN_C IXGameRuntimeFeatureImpl *x_game_runtime_feature;
 EXTERN_C IXSystemImpl *x_system;

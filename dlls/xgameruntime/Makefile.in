@@ -20,6 +20,7 @@ SOURCES = \
 	\
 	GDKComponent/System/XThreading.cpp \
 	GDKComponent/System/XGame.c \
+	GDKComponent/System/XError.c \
 	GDKComponent/System/XLauncher.c \
 	GDKComponent/System/XGameRuntimeFeature.cpp \
 	GDKComponent/System/XSystem.cpp \
@@ -30,6 +31,7 @@ SOURCES = \
 	GDKComponent/Xodus/Structs.cpp \
 	GDKComponent/Xodus/IPCLayer.cpp \
 	GDKComponent/Xodus/XodusService.cpp \
+	GDKComponent/Xodus/SessionCache.cpp \
 	GDKComponent/Xodus/XodusXMLBuilder.cpp \
 	\
 	GDKComponent/Xodus/Unix/socket.c \

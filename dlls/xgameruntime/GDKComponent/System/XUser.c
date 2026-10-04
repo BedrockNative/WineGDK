@@ -30,6 +30,7 @@
 #include <wininet.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
+WINE_DECLARE_DEBUG_CHANNEL(gdk_session);
 
 static const WCHAR *ACCEPT_JSON[] = { L"application/json", NULL };
 static const WCHAR CT_JSON[] = L"Content-Type: application/json";
@@ -206,8 +207,11 @@ struct policy
 
 static void user_xsts_cache_clear( struct XUser *impl );
 
+static ULONGLONG session_time(void);
+
 struct xsts_entry
 {
+    ULONGLONG expiry;
     char *relyingParty;
     BOOL withTitle;
     HSTRING token;
@@ -230,6 +234,8 @@ struct XUser
     HSTRING accessToken;
     HSTRING refreshToken;
     HSTRING userToken;
+    ULONGLONG userTokenExpiry;
+    char *brokerPuid;
     HSTRING deviceToken;
     HSTRING deviceRps;
     HSTRING titleToken;
@@ -345,6 +351,7 @@ static ULONG WINAPI user_Release( IUser *iface )
         WindowsDeleteString( impl->deviceRps );
         if (impl->titleToken) WindowsDeleteString( impl->titleToken );
         if (impl->xstsToken) WindowsDeleteString( impl->xstsToken );
+        free( impl->brokerPuid );
         free( impl->xstsRelyingParty );
         for (UINT32 i = 0; i < impl->xstsCacheCount; ++i)
         {
@@ -539,6 +546,8 @@ cleanup:
 
 static HRESULT WINAPI user_SignData( IUser *iface, ULONG dataSize, UCHAR *data, ULONG signatureSize, UCHAR *signature );
 
+static ULONGLONG xsts_expiry( IJsonObject *object );
+
 static HRESULT WINAPI user_RequestUserToken( IUser *iface )
 {
     const char *template = "{\"TokenType\":\"JWT\",\"RelyingParty\":\"http://auth.xboxlive.com\",\"Properties\":{\"AuthMethod\":\"RPS\",\"SiteName\":\"user.auth.xboxlive.com\",\"RpsTicket\":\"";
@@ -583,6 +592,7 @@ static HRESULT WINAPI user_RequestUserToken( IUser *iface )
     {
         WindowsDeleteString( impl->userToken );
         impl->userToken = newToken;
+        impl->userTokenExpiry = xsts_expiry( object );
     }
     goto cleanup;
 
@@ -1056,7 +1066,7 @@ static void user_xsts_cache_clear( struct XUser *impl )
 }
 
 static HRESULT user_xsts_cache_store( struct XUser *impl, const char *relyingParty, BOOL withTitle,
-                                     HSTRING token, HSTRING userHash )
+                                     HSTRING token, HSTRING userHash, ULONGLONG expiry )
 {
     struct xsts_entry *entry = NULL;
     HSTRING tokenCopy = NULL, hashCopy = NULL;
@@ -1105,6 +1115,7 @@ static HRESULT user_xsts_cache_store( struct XUser *impl, const char *relyingPar
     if (entry->token) WindowsDeleteString( entry->token );
     if (entry->userHash) WindowsDeleteString( entry->userHash );
     entry->relyingParty = rpCopy;
+    entry->expiry = expiry;
     entry->withTitle = withTitle;
     entry->token = tokenCopy;
     entry->userHash = hashCopy;
@@ -1119,7 +1130,7 @@ static BOOL user_xsts_cache_activate( struct XUser *impl, const char *relyingPar
     for (UINT32 i = 0; i < impl->xstsCacheCount; ++i)
     {
         struct xsts_entry *entry = &impl->xstsCache[i];
-        if (entry->withTitle != withTitle || !entry->relyingParty ||
+        if (entry->expiry <= session_time() + 600000000 || entry->withTitle != withTitle || !entry->relyingParty ||
             strcmp( entry->relyingParty, relyingParty ) || !entry->token || !entry->userHash)
             continue;
         if (FAILED(WindowsDuplicateString( entry->token, &tokenCopy ))) return FALSE;
@@ -1137,6 +1148,7 @@ static BOOL user_xsts_cache_activate( struct XUser *impl, const char *relyingPar
         if (impl->xstsToken) WindowsDeleteString( impl->xstsToken );
         if (impl->userHash) WindowsDeleteString( impl->userHash );
         free( impl->xstsRelyingParty );
+        impl->xstsExpiry = entry->expiry;
         impl->xstsToken = tokenCopy;
         impl->userHash = hashCopy;
         impl->xstsRelyingParty = rpCopy;
@@ -1319,7 +1331,7 @@ static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingP
         goto cleanup;
     }
 
-    if (FAILED(hr = user_xsts_cache_store( impl, relyingParty, withTitle, newToken, newUserHash )))
+    if (FAILED(hr = user_xsts_cache_store( impl, relyingParty, withTitle, newToken, newUserHash, xsts_expiry(object) )))
         goto cleanup;
 
     if (impl->xstsToken) WindowsDeleteString( impl->xstsToken );
@@ -1359,7 +1371,8 @@ static HRESULT user_ensure_xsts_for_url( struct XUser *impl, const URL_COMPONENT
 {
     BOOL withTitle = url_wants_title_claims( url, relyingParty );
 
-    if (impl->xstsRelyingParty && impl->xstsToken && impl->userHash &&
+    if (impl->xstsExpiry > session_time() + 600000000 &&
+        impl->xstsRelyingParty && impl->xstsToken && impl->userHash &&
         !strcmp( impl->xstsRelyingParty, relyingParty ) && impl->xstsWithTitle == withTitle)
         return S_OK;
 
@@ -1374,9 +1387,24 @@ static HRESULT WINAPI user_RequestXstsToken( IUser *iface )
     return user_request_xsts_token( impl_from_IUser( iface ), "http://xboxlive.com", TRUE );
 }
 
+static HRESULT user_format_proof_key( const UCHAR *blob, char *proofKey )
+{
+    char *x, *y;
+    HRESULT hr;
+    /* convert proof key to jwk format */
+    memcpy( proofKey, PROOF_KEY_TEMPLATE, ARRAY_SIZE( PROOF_KEY_TEMPLATE ) );
+    x = proofKey + ARRAY_SIZE( PROOF_KEY_TEMPLATE ) - 1;
+    y = x + 43 + ARRAY_SIZE( PROOF_KEY_TEMPLATE2 ) - 1;
+    if (FAILED(hr = encode_base64_url( 32, blob + sizeof(BCRYPT_ECCKEY_BLOB), 43, x, FALSE ))) return hr;
+    strcat( proofKey, PROOF_KEY_TEMPLATE2 );
+    if (FAILED(hr = encode_base64_url( 32, blob + sizeof(BCRYPT_ECCKEY_BLOB) + 32, 43, y, FALSE ))) return hr;
+    strcat( proofKey, "\"}" );
+    return S_OK;
+}
+
 static HRESULT WINAPI user_GenerateKeyPair( IUser *iface )
 {
-    char proofKey[PROOF_KEY_SIZE + 1] = {}, *x, *y;
+    char proofKey[PROOF_KEY_SIZE + 1] = {};
     struct XUser *impl = impl_from_IUser( iface );
     UCHAR blob[sizeof(BCRYPT_ECCKEY_BLOB) + 64];
     BCRYPT_ALG_HANDLE ecdsa = NULL;
@@ -1392,14 +1420,7 @@ static HRESULT WINAPI user_GenerateKeyPair( IUser *iface )
     if (!NT_SUCCESS(status = BCryptFinalizeKeyPair( key, 0 ))) goto error;
     if (!NT_SUCCESS(status = BCryptExportKey( key, NULL, BCRYPT_ECCPUBLIC_BLOB, blob, sizeof(blob), &dummy, 0 ))) goto error;
 
-    /* convert proof key to jwk format */
-    memcpy( proofKey, PROOF_KEY_TEMPLATE, ARRAY_SIZE( PROOF_KEY_TEMPLATE ) );
-    x = proofKey + ARRAY_SIZE( PROOF_KEY_TEMPLATE ) - 1;
-    y = x + 43 + ARRAY_SIZE( PROOF_KEY_TEMPLATE2 ) - 1;
-    if (FAILED(hr = encode_base64_url( 32, blob + sizeof(BCRYPT_ECCKEY_BLOB), 43, x, FALSE ))) goto cleanup;
-    strcat( proofKey, PROOF_KEY_TEMPLATE2 );
-    if (FAILED(hr = encode_base64_url( 32, blob + sizeof(BCRYPT_ECCKEY_BLOB) + 32, 43, y, FALSE ))) goto cleanup;
-    strcat( proofKey, "\"}" );
+    hr = user_format_proof_key( blob, proofKey );
     goto cleanup;
 
 error:
@@ -1583,6 +1604,8 @@ static const struct IUserVtbl user_vtbl =
     user_CacheEndpoints,
 };
 
+#include "XUserSession.h"
+
 static HRESULT finish_user_load( XUserHandle impl )
 {
     IJsonObject *classicGamertag = NULL, *modernGamertag = NULL, *modernGamertagSuffix = NULL;
@@ -1686,6 +1709,22 @@ static void clear_msa_user(void)
     ReleaseSRWLockExclusive( &msa_user_lock );
 }
 
+static HRESULT refresh_user_session( struct XUser *impl )
+{
+    HRESULT hr;
+    xodus_session_cache( "invalidate", impl->brokerPuid, 0, NULL, NULL, NULL );
+    clear_msa_user();
+    AcquireSRWLockExclusive( &impl->xstsLock );
+    user_xsts_cache_clear( impl );
+    WindowsDeleteString( impl->xstsToken ); impl->xstsToken = NULL;
+    WindowsDeleteString( impl->deviceToken ); impl->deviceToken = NULL;
+    WindowsDeleteString( impl->titleToken ); impl->titleToken = NULL;
+    impl->xstsExpiry = 0;
+    hr = IUser_RequestUserToken( &impl->IUser_iface );
+    ReleaseSRWLockExclusive( &impl->xstsLock );
+    return hr;
+}
+
 static HRESULT LoadMsaUser( const char *access_token, const char *puid, const char *device_rps, XUserHandle *user )
 {
     XUserHandle impl = NULL;
@@ -1730,7 +1769,14 @@ static HRESULT LoadMsaUser( const char *access_token, const char *puid, const ch
         IUser_Release( &impl->IUser_iface );
         goto done;
     }
-    if (SUCCEEDED(hr = finish_user_load( impl )))
+    if (puid && *puid) impl->brokerPuid = strdup( puid );
+    hr = restore_broker_session( &impl );
+    if (hr != S_OK)
+    {
+        hr = finish_user_load( impl );
+        if (SUCCEEDED(hr)) store_broker_session( impl );
+    }
+    if (SUCCEEDED(hr))
     {
         if (puid && *puid && (msa_user_puid = strdup( puid )))
         {
@@ -2379,6 +2425,8 @@ static HRESULT WINAPI XUserGetTokenAndSignatureProvider( XAsyncOp op, const XAsy
             if (FAILED(hr = user_parse_token_url( context->url, &uc, &http_url ))) goto cleanup;
             pathAndQueryLen = uc.dwUrlPathLength + uc.dwExtraInfoLength;
             relyingParty = user_GetRelyingParty( context->user, &uc );
+            if ((context->options & XUserGetTokenAndSignatureOptions_ForceRefresh) &&
+                FAILED(hr = refresh_user_session( context->user ))) goto cleanup;
             AcquireSRWLockExclusive( &context->user->xstsLock );
             xstsLocked = TRUE;
             if (FAILED(hr = user_ensure_xsts_for_url( context->user, &uc, relyingParty ))) goto cleanup;

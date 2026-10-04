@@ -429,6 +429,17 @@ Displays memory mapping of debugged process
 Since no user input is possible, no commands are available.
 
 .SH ENVIRONMENT
+.IP \fBWINEDBG_LOG\fR
+Redirect automatic crash reports without opening a console or crash dialog.
+A file path appends the report to that file. Absolute Unix paths and Windows
+paths are accepted; parent directories must already exist.
+Use \fBunix:/path/to/socket\fR to connect to an existing Unix-domain stream
+socket listener and send the text report. A separate connection is made for
+each debugger process and closed after the report. No shell command is executed.
+Socket connection and write waits time out after two seconds. If the destination
+cannot be opened or the listener disconnects, the report falls back to stderr
+without opening a console. An unset or empty value retains normal behavior.
+This option applies to automatic post-mortem debugging, not interactive sessions.
 .IP \fBWINE_GDB\fR
 When used in \fBgdb\fR proxy mode, \fBWINE_GDB\fR specifies the name
 (and the path) of the executable to be used for \fBgdb\fR. "gdb"

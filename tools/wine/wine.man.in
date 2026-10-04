@@ -138,6 +138,22 @@ For more information on debugging messages, see the
 chapter of the Wine User Guide.
 .RE
 .TP
+.B WINE_STARTUP_LOG
+Append UTF-8 JSON lines for process startup, server connection, prefix boot waits,
+executable loading and the first shown top-level window to an absolute Unix path.
+A value of the form \fBunix:/path/to/socket\fR sends each event on a separate
+nonblocking connection to an existing AF_UNIX stream listener. Unavailable sinks
+fall back to stderr. Events include Unix process IDs, wall-clock timestamps and
+monotonic milliseconds. Group by process ID; child processes also emit events.
+A shown window does not imply a ready menu or a rendered frame.
+Unset or empty disables telemetry. This does not suppress the prefix dialog.
+.TP
+.B WINEBOOT_LOG
+Export boot progress and suppress the prefix-update wait dialog; see wineboot(1).
+.TP
+.B WINEDBG_LOG
+Redirect automatic WineDbg crash reports without a new console; see winedbg(1).
+.TP
 .B WINEDLLPATH
 Specifies the path(s) in which to search for builtin dlls and Winelib
 applications. This is a list of directories separated by ":". In

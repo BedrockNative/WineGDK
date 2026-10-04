@@ -4335,3 +4335,19 @@ enum inproc_sync_type
 @REPLY
     obj_handle_t        handle;         /* handle to the ALPC port */
 @END
+
+/* Query a supported system WNF state. */
+@REQ(query_wnf_state)
+    unsigned __int64    name;
+@REPLY
+    unsigned int        stamp;
+    unsigned int        value;
+@END
+
+/* Create a waitable subscription to a supported system WNF state. */
+@REQ(subscribe_wnf_state)
+    unsigned __int64    name;
+    unsigned int        stamp;
+@REPLY
+    obj_handle_t        handle;
+@END

@@ -230,6 +230,7 @@ HRESULT xodus_request(IWebTokenRequest *request,struct xodus_token *token)
     WCHAR client[64],family[128]; UINT32 family_length=ARRAY_SIZE(family); DWORD title=0,timeout=45000; WSADATA wsa; SOCKET socket_fd=INVALID_SOCKET;
     SOCKADDR_UN address={AF_UNIX}; char runtime[512],socket_name[100],socket_path[600],*escaped_url=NULL,*escaped_client=NULL,*escaped_method=NULL,*escaped_headers=NULL,*escaped_family=NULL,*xml=NULL;
     BYTE header[8],*data=NULL; UINT size; HRESULT hr; BOOL started=FALSE;
+    ULONGLONG start = GetTickCount64();
     memset(token,0,sizeof(*token));
     if(FAILED(hr=IWebTokenRequest_get_Properties(request,&properties))) goto done;
     if(FAILED(hr=get_property(properties,L"Url",&url))) goto done;
@@ -284,7 +285,7 @@ HRESULT xodus_request(IWebTokenRequest *request,struct xodus_token *token)
     if(SUCCEEDED(hr=socket_transfer(socket_fd,(char *)data,size,FALSE))) hr=read_token(data,size,token);
     SecureZeroMemory(data,size);
 done:
-    TRACE("Xodus Xbox exchange completed: %#lx\n",hr);
+    TRACE("Xodus Xbox exchange completed: %#lx, elapsed %llu ms\n",hr,GetTickCount64()-start);
     if(socket_fd!=INVALID_SOCKET) closesocket(socket_fd); if(started) WSACleanup();
     free(escaped_method); free(escaped_headers); WindowsDeleteString(method); WindowsDeleteString(headers);
     free(escaped_family); WindowsDeleteString(family_string);

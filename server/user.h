@@ -313,4 +313,6 @@ static inline user_handle_t get_valid_window_handle( user_handle_t win )
     return 0;
 }
 
+extern void wnf_set_foreground_process( process_id_t pid );
+
 #endif  /* __WINE_SERVER_USER_H */

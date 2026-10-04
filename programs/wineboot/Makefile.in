@@ -5,6 +5,7 @@ DELAYIMPORTS = shell32 shlwapi version user32 gdi32 setupapi newdev wininet
 EXTRADLLFLAGS = -mconsole
 
 SOURCES = \
+	log_output.c \
 	shutdown.c \
 	wineboot.c \
 	wineboot.man.in \

@@ -23,20 +23,22 @@
 
 #include <cstring>
 #include <atomic>
-#include <thread>
-#include <chrono>
 #include <winhttp.h>
+#include <new>
+#include "wine/list.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
+WINE_DECLARE_DEBUG_CHANNEL(gdk_session);
 
-/* Stable storage: PlayFab Multiplayer may keep the connectivityHint pointer from
- * RegisterConnectivityHintChanged after the register call returns. */
+/* The host networking stack is available before the title starts. Xbox account
+ * authentication is independent of network initialization. Keep stable storage
+ * for middleware which retains the hint passed to its notification callback. */
 static XNetworkingConnectivityHint g_connectivity_hint =
 {
-    XNetworkingConnectivityLevelHint::Unknown,
-    XNetworkingConnectivityCostHint::Unknown,
+    XNetworkingConnectivityLevelHint::InternetAccess,
+    XNetworkingConnectivityCostHint::Unrestricted,
     0,       /* ianaInterfaceType */
-    FALSE,   /* networkInitialized — must stay false until Xbox user auth is up */
+    TRUE,    /* networkInitialized */
     FALSE,   /* approachingDataLimit */
     FALSE,   /* overDataLimit */
     FALSE,   /* roaming */
@@ -44,48 +46,78 @@ static XNetworkingConnectivityHint g_connectivity_hint =
 
 static std::atomic_uint64_t g_connectivity_hint_token{1};
 static std::atomic_uint64_t g_preferred_udp_token{1};
-static std::atomic_bool g_connectivity_bringup_started{false};
-static std::atomic_bool g_connectivity_initialized{false};
 
-static XNetworkingConnectivityHintChangedCallback *g_connectivity_callback;
-static void *g_connectivity_callback_context;
-static UINT64 g_connectivity_callback_token;
+struct connectivity_registration
+{
+    struct list entry;
+    LONG refs;
+    UINT64 token;
+    XNetworkingConnectivityHintChangedCallback *callback;
+    void *context;
+    IXThreadingImpl *threading;
+    XTaskQueueHandle queue;
+    bool removed, running;
+    DWORD callback_thread;
+};
+
+static SRWLOCK connectivity_lock = SRWLOCK_INIT;
+static CONDITION_VARIABLE connectivity_done = CONDITION_VARIABLE_INIT;
+static struct list connectivity_registrations = LIST_INIT(connectivity_registrations);
+
+static void release_connectivity_registration( connectivity_registration *registration )
+{
+    if (InterlockedDecrement( &registration->refs )) return;
+    if (registration->queue) registration->threading->XTaskQueueCloseHandle( registration->queue );
+    if (registration->threading) registration->threading->Release();
+    delete registration;
+}
+
+static void WINAPI connectivity_callback( void *context, BOOLEAN canceled )
+{
+    auto registration = static_cast<connectivity_registration *>(context);
+    AcquireSRWLockExclusive( &connectivity_lock );
+    TRACE_(gdk_session)( "Connectivity callback token %I64u, canceled %u, removed %u.\n",
+                        registration->token, (unsigned)canceled, (unsigned)registration->removed );
+    if (!canceled && !registration->removed)
+    {
+        registration->running = true;
+        registration->callback_thread = GetCurrentThreadId();
+        ReleaseSRWLockExclusive( &connectivity_lock );
+        /* Keep the hint address stable for middleware which retains it. */
+        registration->callback( registration->context, &g_connectivity_hint );
+        AcquireSRWLockExclusive( &connectivity_lock );
+        registration->running = false;
+        WakeAllConditionVariable( &connectivity_done );
+    }
+    ReleaseSRWLockExclusive( &connectivity_lock );
+    release_connectivity_registration( registration );
+}
+
+static void CALLBACK connectivity_threadpool_callback( PTP_CALLBACK_INSTANCE, void *context )
+{
+    connectivity_callback( context, FALSE );
+}
+
+static HRESULT submit_connectivity_callback( connectivity_registration *registration )
+{
+    HRESULT hr;
+    TRACE_(gdk_session)( "Queue connectivity callback token %I64u.\n", registration->token );
+    if (registration->queue)
+        hr = registration->threading->XTaskQueueSubmitCallback( registration->queue, XTaskQueuePort::Completion,
+                                                               registration, connectivity_callback );
+    else
+        hr = TrySubmitThreadpoolCallback( connectivity_threadpool_callback, registration, nullptr ) ?
+                S_OK : HRESULT_FROM_WIN32(GetLastError());
+    if (FAILED(hr)) release_connectivity_registration( registration );
+    return hr;
+}
 
 static void fill_connectivity_hint( XNetworkingConnectivityHint *out )
 {
+    AcquireSRWLockShared( &connectivity_lock );
     *out = g_connectivity_hint;
+    ReleaseSRWLockShared( &connectivity_lock );
 }
-
-static void mark_network_initialized_and_notify( void )
-{
-    g_connectivity_hint.connectivityLevel = XNetworkingConnectivityLevelHint::InternetAccess;
-    g_connectivity_hint.connectivityCost = XNetworkingConnectivityCostHint::Unrestricted;
-    g_connectivity_hint.networkInitialized = TRUE;
-    g_connectivity_initialized.store( true );
-
-    XNetworkingConnectivityHintChangedCallback *callback = g_connectivity_callback;
-    void *context = g_connectivity_callback_context;
-    TRACE( "networkInitialized -> TRUE, callback %p token %I64u\n", callback, g_connectivity_callback_token );
-    if (callback)
-        callback( context, &g_connectivity_hint );
-}
-
-/* Defer bring-up so titles finish XUserAdd / XSTS before PeopleHub/RTA start.
- * Firing initialized=TRUE synchronously during RegisterConnectivityHintChanged made
- * Minecraft hit peoplehub before auth and get HTTP 500 (friends list empty). */
-static void ensure_connectivity_bringup( void )
-{
-    bool expected = false;
-    if (!g_connectivity_bringup_started.compare_exchange_strong( expected, true ))
-        return;
-
-    std::thread( []
-    {
-        std::this_thread::sleep_for( std::chrono::milliseconds( 2500 ) );
-        mark_network_initialized_and_notify();
-    } ).detach();
-}
-
 
 static HRESULT WINAPI security_information_provider( XAsyncOp op, const XAsyncProviderData *data )
 {
@@ -347,15 +379,11 @@ public:
 
     HRESULT WINAPI XNetworkingGetConnectivityHint( XNetworkingConnectivityHint *connectivityHint ) override
     {
-        TRACE( "connectivityHint %p -> level=%u cost=%u initialized=%u\n",
-               connectivityHint,
-               (unsigned)g_connectivity_hint.connectivityLevel,
-               (unsigned)g_connectivity_hint.connectivityCost,
-               (unsigned)g_connectivity_hint.networkInitialized );
-
         if (!connectivityHint) return E_POINTER;
-        ensure_connectivity_bringup();
         fill_connectivity_hint( connectivityHint );
+        TRACE( "connectivityHint %p -> level=%u cost=%u initialized=%u\n",
+               connectivityHint, (unsigned)connectivityHint->connectivityLevel,
+               (unsigned)connectivityHint->connectivityCost, (unsigned)connectivityHint->networkInitialized );
         return S_OK;
     }
 
@@ -366,30 +394,54 @@ public:
 
         if (!callback || !token) return E_POINTER;
 
-        token->token = g_connectivity_hint_token.fetch_add( 1 );
-        g_connectivity_callback = callback;
-        g_connectivity_callback_context = context;
-        g_connectivity_callback_token = token->token;
-
-        ensure_connectivity_bringup();
-
-        /* If bring-up already finished, notify now with the stable global hint. */
-        if (g_connectivity_initialized.load())
-            callback( context, &g_connectivity_hint );
-
+        token->token = 0;
+        auto registration = new (std::nothrow) connectivity_registration{};
+        if (!registration) return E_OUTOFMEMORY;
+        registration->refs = 1;
+        registration->token = g_connectivity_hint_token.fetch_add( 1 );
+        registration->callback = callback;
+        registration->context = context;
+        if (queue)
+        {
+            HRESULT hr = QueryApiImpl( &CLSID_XThreadingImpl, IID_IXThreadingImpl,
+                                      (void **)&registration->threading );
+            if (SUCCEEDED(hr)) hr = registration->threading->XTaskQueueDuplicateHandle( queue, &registration->queue );
+            if (FAILED(hr)) { release_connectivity_registration( registration ); return hr; }
+        }
+        AcquireSRWLockExclusive( &connectivity_lock );
+        list_add_tail( &connectivity_registrations, &registration->entry );
+        /* Each registration receives an initial notification on its queue. */
+        InterlockedIncrement( &registration->refs );
+        token->token = registration->token;
+        ReleaseSRWLockExclusive( &connectivity_lock );
+        HRESULT hr = submit_connectivity_callback( registration );
+        if (FAILED(hr))
+        {
+            XNetworkingUnregisterConnectivityHintChanged( *token, TRUE );
+            token->token = 0;
+            return hr;
+        }
         return S_OK;
     }
 
     BOOLEAN WINAPI XNetworkingUnregisterConnectivityHintChanged( XTaskQueueRegistrationToken token, BOOLEAN wait ) override
     {
+        connectivity_registration *registration, *found = nullptr;
         TRACE( "token %I64u, wait %d\n", (UINT64)token.token, wait );
-        if (g_connectivity_callback_token == token.token)
+        AcquireSRWLockExclusive( &connectivity_lock );
+        LIST_FOR_EACH_ENTRY( registration, &connectivity_registrations, connectivity_registration, entry )
+            if (registration->token == token.token) { found = registration; break; }
+        if (found)
         {
-            g_connectivity_callback = nullptr;
-            g_connectivity_callback_context = nullptr;
-            g_connectivity_callback_token = 0;
+            list_remove( &found->entry );
+            found->removed = true;
+            /* A callback may unregister itself without waiting on its own return. */
+            while (wait && found->running && found->callback_thread != GetCurrentThreadId())
+                SleepConditionVariableSRW( &connectivity_done, &connectivity_lock, INFINITE, 0 );
         }
-        return TRUE;
+        ReleaseSRWLockExclusive( &connectivity_lock );
+        if (found) release_connectivity_registration( found );
+        return found != nullptr;
     }
 
     HRESULT WINAPI XNetworkingQueryConfigurationSetting( XNetworkingConfigurationSetting configurationSetting, UINT64 *value ) override

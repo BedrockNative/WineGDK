@@ -3538,6 +3538,28 @@ static void dump_alpc_create_port_reply( const struct alpc_create_port_reply *re
     fprintf( stderr, " handle=%04x", req->handle );
 }
 
+static void dump_query_wnf_state_request( const struct query_wnf_state_request *req )
+{
+    dump_uint64( " name=", &req->name );
+}
+
+static void dump_query_wnf_state_reply( const struct query_wnf_state_reply *req )
+{
+    fprintf( stderr, " stamp=%08x", req->stamp );
+    fprintf( stderr, ", value=%08x", req->value );
+}
+
+static void dump_subscribe_wnf_state_request( const struct subscribe_wnf_state_request *req )
+{
+    dump_uint64( " name=", &req->name );
+    fprintf( stderr, ", stamp=%08x", req->stamp );
+}
+
+static void dump_subscribe_wnf_state_reply( const struct subscribe_wnf_state_reply *req )
+{
+    fprintf( stderr, " handle=%04x", req->handle );
+}
+
 typedef void (*dump_func)( const void *req );
 
 static const dump_func req_dumpers[REQ_NB_REQUESTS] =
@@ -3850,6 +3872,8 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_d3dkmt_mutex_acquire_request,
     (dump_func)dump_d3dkmt_mutex_release_request,
     (dump_func)dump_alpc_create_port_request,
+    (dump_func)dump_query_wnf_state_request,
+    (dump_func)dump_subscribe_wnf_state_request,
 };
 
 static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
@@ -4162,6 +4186,8 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_d3dkmt_mutex_acquire_reply,
     NULL,
     (dump_func)dump_alpc_create_port_reply,
+    (dump_func)dump_query_wnf_state_reply,
+    (dump_func)dump_subscribe_wnf_state_reply,
 };
 
 static const char * const req_names[REQ_NB_REQUESTS] =
@@ -4474,6 +4500,8 @@ static const char * const req_names[REQ_NB_REQUESTS] =
     "d3dkmt_mutex_acquire",
     "d3dkmt_mutex_release",
     "alpc_create_port",
+    "query_wnf_state",
+    "subscribe_wnf_state",
 };
 
 static const struct
@@ -4556,6 +4584,7 @@ static const struct
     { "INVALID_USER_BUFFER",         STATUS_INVALID_USER_BUFFER },
     { "IO_REPARSE_DATA_INVALID",     STATUS_IO_REPARSE_DATA_INVALID },
     { "IO_REPARSE_TAG_INVALID",      STATUS_IO_REPARSE_TAG_INVALID },
+    { "IO_REPARSE_TAG_NOT_HANDLED",  STATUS_IO_REPARSE_TAG_NOT_HANDLED },
     { "IO_TIMEOUT",                  STATUS_IO_TIMEOUT },
     { "KERNEL_APC",                  STATUS_KERNEL_APC },
     { "KEY_DELETED",                 STATUS_KEY_DELETED },

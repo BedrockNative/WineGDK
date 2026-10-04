@@ -171,6 +171,8 @@ HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, voi
     *out = NULL;
     if (!runtimeClassId || !interfaceId) return E_INVALIDARG;
 
+    if (IsEqualGUID( runtimeClassId, &CLSID_XErrorImpl ))
+        return IXErrorImpl_QueryInterface( x_error_impl, interfaceId, out );
     if (IsEqualGUID( runtimeClassId, &CLSID_XLauncherImpl ))
         return IXLauncherImpl_QueryInterface( x_launcher, interfaceId, out );
     if (IsEqualGUID( runtimeClassId, &CLSID_XSystemImpl ))
@@ -210,6 +212,5 @@ HRESULT WINAPI UninitializeApiImpl( void )
 
 HRESULT WINAPI XErrorReport( HRESULT status, LPCSTR message )
 {
-    WARN( "status %#lx, message %s stub!\n", status, debugstr_a( message ) );
-    return E_NOTIMPL;
+    return x_error_report( status, message );
 }

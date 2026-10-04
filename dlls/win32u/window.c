@@ -31,6 +31,7 @@
 #include "wine/opengl_driver.h"
 #include "wine/server.h"
 #include "wine/debug.h"
+#include "wine/startup.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(win);
 
@@ -38,6 +39,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(win);
 #define USER_HANDLE_FROM_INDEX(index, generation) UlongToHandle( (index << 1) + FIRST_USER_HANDLE + (generation << 16) )
 
 static const struct ratio no_dpi;
+static LONG startup_window_reported;
 
 static void *client_objects[MAX_USER_HANDLES];
 
@@ -4109,6 +4111,12 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
         NtUserNotifyWinEvent( EVENT_OBJECT_SHOW, winpos->hwnd, 0, 0 );
 
         NtUserShowCaret( winpos->hwnd );
+        if (getenv("WINE_STARTUP_LOG") &&
+            NtUserGetAncestor(winpos->hwnd, GA_PARENT) == get_desktop_window() &&
+            !(get_window_long(winpos->hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) &&
+            new_rects.window.right > new_rects.window.left && new_rects.window.bottom > new_rects.window.top &&
+            !InterlockedCompareExchange(&startup_window_reported, 1, 0))
+            wine_startup_event("first_window_shown", NULL, 0);
     }
 
     if (!(winpos->flags & (SWP_NOACTIVATE|SWP_HIDEWINDOW)))

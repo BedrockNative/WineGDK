@@ -171,6 +171,7 @@ public:
         TRACE( "response %p.\n", response );
         if (!response) return E_POINTER;
         *response = nullptr;
+        xodusSessionCacheAvailable = FALSE;
         if (!xml_string) return E_INVALIDARG;
         if (!(doc = xmlReadMemory( xml_string, strlen( xml_string ), nullptr, nullptr, XML_PARSE_NONET )))
             return E_INVALIDARG;
@@ -228,6 +229,14 @@ public:
             hr = E_OUTOFMEMORY;
             goto cleanup;
         }
+        for (child = root->children; child; child = child->next)
+            if (child->type == XML_ELEMENT_NODE && !xmlStrcmp( child->name, BAD_CAST "GdkSessionCacheVersion" ))
+            {
+                xmlChar *version = xmlNodeGetContent( child );
+                xodusSessionCacheAvailable = version && !xmlStrcmp( version, BAD_CAST "1" );
+                xmlFree( version );
+                break;
+            }
         hr = S_OK;
 
     cleanup:

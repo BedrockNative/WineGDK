@@ -76,9 +76,9 @@ public:
 
     BOOLEAN WINAPI XGameRuntimeIsFeatureAvailable( XGameRuntimeFeature feature ) override
     {
-        // Always assume the feature is available, regardless of what game it is, for compatibility reasons.
         TRACE( "feature %d.\n", (int)feature );
-        return TRUE;
+        /* Preserve the established capability contract for known GDK features. */
+        return static_cast<unsigned int>(feature) <= static_cast<unsigned int>(XGameRuntimeFeature::XGameStreaming);
     }
 
 private:

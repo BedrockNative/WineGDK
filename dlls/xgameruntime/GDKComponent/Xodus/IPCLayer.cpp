@@ -208,7 +208,7 @@ private:
         AcquireSRWLockExclusive( &iface->m_RequestLock );
         if (FAILED(hr = packet->get_Magic( &header.Magic ))) goto cleanup;
         if (FAILED(hr = packet->get_MessageType( &header.Message_Type ))) goto cleanup;
-        if (header.Message_Type != 1 && header.Message_Type != 3)
+        if (header.Message_Type != 1 && header.Message_Type != 3 && header.Message_Type != 11)
         {
             hr = E_INVALIDARG;
             goto cleanup;
@@ -260,7 +260,7 @@ private:
             hr = HRESULT_FROM_NT( status );
             goto cleanup;
         }
-        wait = WaitForSingleObject( context.event, IPC_REQUEST_TIMEOUT_MS );
+        wait = WaitForSingleObject( context.event, header.Message_Type == 11 ? 2000 : IPC_REQUEST_TIMEOUT_MS );
         if (wait == WAIT_OBJECT_0) hr = S_OK;
         else if (wait == WAIT_TIMEOUT) hr = HRESULT_FROM_WIN32( ERROR_TIMEOUT );
         else hr = HRESULT_FROM_WIN32( GetLastError() );

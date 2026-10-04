@@ -634,6 +634,8 @@ static void set_foreground_input( struct desktop *desktop, struct process *proce
     set_clip_rectangle( desktop, NULL, SET_CURSOR_NOCLIP, 1 );
     desktop->foreground_input = input;
     desktop->foreground_pid = process->id;
+    if (desktop == desktop->winstation->input_desktop && (desktop->winstation->flags & WSF_VISIBLE))
+        wnf_set_foreground_process( input ? process->id : 0 );
 
     SHARED_WRITE_BEGIN( old_input_shm, input_shm_t )
     {
@@ -1338,6 +1340,8 @@ static void thread_input_destroy( struct object *obj )
         {
             desktop->foreground_input = NULL;
             desktop->foreground_pid = 0;
+            if (desktop == desktop->winstation->input_desktop && (desktop->winstation->flags & WSF_VISIBLE))
+                wnf_set_foreground_process( 0 );
         }
         release_object( desktop );
     }

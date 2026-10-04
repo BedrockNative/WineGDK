@@ -2,6 +2,10 @@
 
 Microsoft Services is WIP.
 
+New fork releases use `11.18-<number>-winrt`, reflecting support for both GDK
+and UWP/Windows Runtime. The current release is `11.18-5-winrt`; existing
+`*-gdkcomponents` tags keep their original names.
+
 Set `XODUS_SOCK_NAME` to override the default `xodus.sock` filename under
 `$XDG_RUNTIME_DIR` on Linux (`/tmp` on macOS). For example,
 `XODUS_SOCK_NAME=my-xodus.sock ./build/bin/wine game.exe` connects to
@@ -10,7 +14,10 @@ The existing `XODUS_SOCKET` full-path override takes precedence when nonempty.
 
 Xodus's `WINE_DLL_FILE_MAP` in-memory executable protocol is supported. Launchers
 may set `WINEBOOT_HIDE_DIALOG=1` to hide only the prefix-update wait dialog while
-retaining setup and diagnostic output. See [launcher integration](documentation/xodus-launcher.md).
+retaining setup and diagnostic output. `WINEBOOT_LOG` exports silent boot progress,
+`WINE_STARTUP_LOG` measures startup stages, and `WINEDBG_LOG` redirects automatic
+crash reports without a new console. File and Unix socket destinations are supported;
+see [launcher integration](documentation/xodus-launcher.md).
 
 As of [3414250](https://github.com/Weather-OS/WineGDK/commit/341425050f4f9b968b807dbd61942dabca8f6af1), Online functionality has been implemented. To get it working, resort to [GDK-Proton](https://github.com/Weather-OS/GDK-Proton)
 
@@ -87,10 +94,9 @@ normal decorations when returning to windowed mode.
 `dlls/gameinput.redist` supplies the extracted GameInput runtime and
 `loader/gameinput.inf.in` reproduces its file, device database, COM and service
 registration on x64 prefix creation/update. The MSI is neither bundled nor run.
-Wine's builtin GameInput stays the default: the native redist service currently
-requires the unimplemented `ntdll.NtQueryWnfStateData`, so setup leaves it at
-demand start and does not start it automatically. See the package README for
-the remaining native-service compatibility limitation.
+Wine's builtin GameInput stays the default. Setup leaves the native redist
+service at demand start. The shell-focus WNF query/subscription path used by
+that service is implemented; other native-service compatibility remains WIP.
 
 Or run Wine directly from the build directory:
 

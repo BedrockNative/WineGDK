@@ -7,7 +7,21 @@
 
 char *msaAppId = "0000000040159362";
 UINT32 titleId = 896928775;
-BOOLEAN fullTrust, xodusAvailable;
+BOOLEAN fullTrust, xodusAvailable, xodusSessionCacheAvailable;
+static char *broker_data;
+static LONGLONG broker_expiry;
+HRESULT xodus_session_cache(const char *op, const char *puid, LONGLONG expiry,
+                            const char *input, char **output, LONGLONG *returned_expiry)
+{
+    if (output) *output = NULL;
+    if (returned_expiry) *returned_expiry = 0;
+    if (!xodusSessionCacheAvailable || !puid) return S_FALSE;
+    if (!strcmp(op, "put")) { free(broker_data); broker_data = strdup(input); broker_expiry = expiry; return S_OK; }
+    if (!strcmp(op, "invalidate")) { free(broker_data); broker_data = NULL; return S_OK; }
+    if (strcmp(op, "get") || !broker_data) return S_FALSE;
+    *output = strdup(broker_data); *returned_expiry = broker_expiry;
+    return S_OK;
+}
 IXodusService *xodus_service;
 HRESULT WINAPI QueryApiImpl(const GUID *clsid, REFIID iid, void **out) { *out = NULL; return E_NOTIMPL; }
 static unsigned requests;
@@ -40,7 +54,11 @@ HRESULT fixture_http_request(const WCHAR *method, const WCHAR *host, const WCHAR
     ++requests;
     *buffer = NULL; *size = 0;
     if (fail_exchange) return E_FAIL;
-    if (!wcscmp(host, L"user.auth.xboxlive.com")) response = "{\"Token\":\"fixture-user\"}";
+    if (!wcscmp(host, L"user.auth.xboxlive.com"))
+    {
+        snprintf(data, sizeof(data), "{\"Token\":\"fixture-user\",\"NotAfter\":\"%s\"}", expiration);
+        response = data;
+    }
     else if (!wcscmp(host, L"xsts.auth.xboxlive.com"))
     {
         check(!!strstr(body, "DeviceToken") == expect_title_claims);
@@ -126,6 +144,89 @@ static void test_token_urls(void)
         free(normalized);
     }
 }
+static void test_broker_sessions(void)
+{
+    static UCHAR hash[32] = {0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
+                            0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad};
+    XUserHandle original, restored;
+    char *encoded, *damaged;
+    UCHAR signature[64];
+    unsigned before, i;
+    UINT32 saved_title = titleId;
+    char *saved_client = msaAppId;
+    ULONGLONG saved_expiry;
+    clear_msa_user(); fail_exchange = FALSE; xodusSessionCacheAvailable = TRUE;
+    original = load("original-oauth", "cache-account");
+    check(broker_data != NULL);
+    original->endpoints = calloc(2, sizeof(*original->endpoints)); original->endpointsLen = 2;
+    original->endpoints[0].host = strdup("*.xboxlive.com");
+    original->endpoints[0].path = strdup("/titles/current");
+    original->endpoints[0].relyingParty = strdup("http://xboxlive.com");
+    original->endpoints[1].host = strdup("example.invalid");
+    original->policies = calloc(1, sizeof(*original->policies)); original->policiesLen = 1;
+    original->policies[0].version = 1; original->policies[0].maxBodyBytes = 8192;
+    encoded = export_user_session(original); check(encoded != NULL);
+    if (!encoded) { IUser_Release(&original->IUser_iface); return; }
+    restored = import_user_session(encoded, "cache-account"); check(restored != NULL);
+    if (restored)
+    {
+        check(restored->xuid == original->xuid);
+        check(!memcmp(restored->proofKey, original->proofKey, PROOF_KEY_SIZE));
+        check(!strcmp(restored->deviceId, original->deviceId));
+        check(restored->xstsExpiry == original->xstsExpiry && restored->userTokenExpiry == original->userTokenExpiry);
+        check(restored->endpointsLen == 2 && !strcmp(restored->endpoints[0].path, "/titles/current"));
+        check(!restored->endpoints[1].path && !restored->endpoints[1].relyingParty);
+        check(restored->policiesLen == 1 && restored->policies[0].maxBodyBytes == 8192);
+        check(SUCCEEDED(IUser_SignData(&restored->IUser_iface, 3, (UCHAR *)"abc", 64, signature)));
+        check(NT_SUCCESS(BCryptVerifySignature(original->key, NULL, hash, 32, signature, 64, 0)));
+        check(!restored->accessToken && !restored->deviceRps);
+        IUser_Release(&restored->IUser_iface);
+    }
+    check(!import_user_session(encoded, "different-account"));
+    ++titleId; check(!import_user_session(encoded, "cache-account")); titleId = saved_title;
+    msaAppId = "different-client"; check(!import_user_session(encoded, "cache-account")); msaAppId = saved_client;
+    fullTrust = TRUE; check(!import_user_session(encoded, "cache-account")); fullTrust = FALSE;
+    damaged = strdup(encoded);
+    for (i = 0; i < strlen(encoded); i += 4)
+    {
+        char saved = damaged[i]; damaged[i] = 0;
+        check(!import_user_session(damaged, "cache-account")); damaged[i] = saved;
+    }
+    damaged[0] = '!'; check(!import_user_session(damaged, "cache-account")); free(damaged);
+    saved_expiry = original->userTokenExpiry; original->userTokenExpiry = session_time();
+    check(!export_user_session(original)); original->userTokenExpiry = saved_expiry;
+    store_broker_session(original);
+    clear_msa_user(); before = requests; fail_exchange = TRUE;
+    check(SUCCEEDED(LoadMsaUser("fresh-oauth", "cache-account", "fresh-device", &restored)));
+    check(restored && requests == before);
+    if (restored)
+    {
+        check(!wcscmp(WindowsGetStringRawBuffer(restored->accessToken, NULL), L"fresh-oauth"));
+        check(!wcscmp(WindowsGetStringRawBuffer(restored->deviceRps, NULL), L"fresh-device"));
+        IUser_Release(&restored->IUser_iface);
+    }
+    clear_msa_user(); fail_exchange = FALSE;
+    broker_expiry = 1; before = requests;
+    restored = load("fresh-oauth", "cache-account"); check(requests == before + 4);
+    IUser_Release(&restored->IUser_iface); clear_msa_user();
+    free(broker_data); broker_data = strdup("invalid snapshot"); before = requests;
+    restored = load("fresh-oauth", "cache-account"); check(requests == before + 4);
+    IUser_Release(&restored->IUser_iface); clear_msa_user();
+    restored = load("fresh-oauth", "cache-account");
+    before = requests;
+    check(SUCCEEDED(refresh_user_session(restored)));
+    check(!broker_data && !msa_user && !restored->xstsToken && !restored->xstsCacheCount && requests == before + 1);
+    check(SUCCEEDED(user_request_xsts_token(restored, "http://xboxlive.com", FALSE)) && requests == before + 2);
+    restored->xstsCache[0].expiry = session_time();
+    check(!user_xsts_cache_activate(restored, "http://xboxlive.com", FALSE));
+    IUser_Release(&restored->IUser_iface); clear_msa_user();
+    before = requests; xodusSessionCacheAvailable = FALSE;
+    restored = load("old-service", "cache-account"); check(requests == before + 4);
+    IUser_Release(&restored->IUser_iface); clear_msa_user();
+    IUser_Release(&original->IUser_iface);
+    free(encoded); free(broker_data); broker_data = NULL;
+}
+
 int main(void)
 {
     XUserHandle first, next, concurrent[6] = {0};
@@ -219,6 +320,7 @@ int main(void)
     check(FAILED(user_ensure_device_and_title_tokens(first)) && requests == before + 1);
     IUser_Release(&first->IUser_iface);
     clear_msa_user();
+    test_broker_sessions();
     RoUninitialize();
     printf("%ld checks, %ld failures, %u fixture HTTP requests\n", checks, failures, requests);
     return !!failures;
