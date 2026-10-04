@@ -18,14 +18,17 @@
 
 #include <stdarg.h>
 #define COBJMACROS
+#define CONST_VTABLE
 #include "initguid.h"
 #include "windef.h"
 #include "winbase.h"
+#include "winuser.h"
 #include "winstring.h"
 #include "roapi.h"
 #include "weakreference.h"
 #include "wine/test.h"
 
+#define WIDL_using_Windows_Foundation
 #define WIDL_using_Windows_UI_ViewManagement_Core
 #define WIDL_using_Windows_Foundation_Collections
 #include "windows.ui.viewmanagement.core.h"
@@ -171,6 +174,96 @@ static void test_CoreTextServicesManager(void)
     ok(ref == 1, "Got unexpected refcount %ld.\n", ref);
 }
 
+typedef ITypedEventHandler_CoreTextEditContext_CoreTextTextUpdatingEventArgs text_handler;
+static unsigned int text_update_count;
+
+static HRESULT WINAPI text_handler_QueryInterface(text_handler *iface, REFIID iid, void **out)
+{
+    *out = NULL;
+    if (!IsEqualGUID(iid, &IID_IUnknown) &&
+        !IsEqualGUID(iid, &IID_ITypedEventHandler_CoreTextEditContext_CoreTextTextUpdatingEventArgs))
+        return E_NOINTERFACE;
+    *out = iface;
+    return S_OK;
+}
+
+static ULONG WINAPI text_handler_AddRef(text_handler *iface) { return 2; }
+static ULONG WINAPI text_handler_Release(text_handler *iface) { return 1; }
+
+static HRESULT WINAPI text_handler_Invoke(text_handler *iface, ICoreTextEditContext *sender,
+                                          ICoreTextTextUpdatingEventArgs *args)
+{
+    HSTRING text;
+    HRESULT hr;
+    hr = ICoreTextTextUpdatingEventArgs_get_Text(args, &text);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(!wcscmp(WindowsGetStringRawBuffer(text, NULL), L"a"), "Unexpected text.\n");
+    WindowsDeleteString(text);
+    ++text_update_count;
+    return ICoreTextTextUpdatingEventArgs_put_Result(args, CoreTextTextUpdatingResult_Succeeded);
+}
+
+static const ITypedEventHandler_CoreTextEditContext_CoreTextTextUpdatingEventArgsVtbl text_handler_vtbl =
+{
+    text_handler_QueryInterface, text_handler_AddRef, text_handler_Release, text_handler_Invoke
+};
+
+static void test_desktop_focus(void)
+{
+    ICoreTextServicesManagerStatics *statics;
+    ICoreTextServicesManager *manager;
+    ICoreTextEditContext *context;
+    text_handler handler = {&text_handler_vtbl};
+    EventRegistrationToken token;
+    HSTRING name;
+    HWND hwnd;
+    HRESULT hr;
+
+    WindowsCreateString(RuntimeClass_Windows_UI_Text_Core_CoreTextServicesManager,
+                        wcslen(RuntimeClass_Windows_UI_Text_Core_CoreTextServicesManager), &name);
+    hr = RoGetActivationFactory(name, &IID_ICoreTextServicesManagerStatics, (void **)&statics);
+    WindowsDeleteString(name);
+    if (FAILED(hr)) { win_skip("CoreText unavailable, hr %#lx.\n", hr); return; }
+    hr = ICoreTextServicesManagerStatics_GetForCurrentView(statics, &manager);
+    ICoreTextServicesManagerStatics_Release(statics);
+    if (FAILED(hr)) { win_skip("CoreText unavailable on this thread, hr %#lx.\n", hr); return; }
+    hr = ICoreTextServicesManager_CreateEditContext(manager, &context);
+    ICoreTextServicesManager_Release(manager);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    if (FAILED(hr)) return;
+
+    hwnd = CreateWindowExW(0, L"static", L"CoreText desktop test", WS_OVERLAPPEDWINDOW,
+                           0, 0, 200, 100, NULL, NULL, NULL, NULL);
+    ok(!!hwnd, "Failed to create window.\n");
+    SetFocus(hwnd);
+    ok(GetFocus() == hwnd, "Window did not receive focus.\n");
+    hr = ICoreTextEditContext_add_TextUpdating(context, &handler, &token);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = ICoreTextEditContext_NotifyFocusEnter(context);
+    ok(hr == S_OK, "Desktop focus failed, hr %#lx.\n", hr);
+    hr = ICoreTextEditContext_NotifyFocusEnter(context);
+    ok(hr == S_OK, "Repeated focus failed, hr %#lx.\n", hr);
+    /* Wine's character bridge is synchronous; native TSF need not handle injected WM_CHAR. */
+    if (!strcmp(winetest_platform, "wine"))
+    {
+        text_update_count = 0;
+        SendMessageW(hwnd, WM_CHAR, 'a', 1);
+        ok(text_update_count == 1, "Got %u text updates.\n", text_update_count);
+    }
+    hr = ICoreTextEditContext_NotifyFocusLeave(context);
+    ok(hr == S_OK, "Focus leave failed, hr %#lx.\n", hr);
+    text_update_count = 0;
+    SendMessageW(hwnd, WM_CHAR, 'a', 1);
+    ok(!text_update_count, "Received text after leaving focus.\n");
+    hr = ICoreTextEditContext_NotifyFocusEnter(context);
+    ok(hr == S_OK, "Refocus failed, hr %#lx.\n", hr);
+    DestroyWindow(hwnd);
+    hr = ICoreTextEditContext_NotifyFocusLeave(context);
+    ok(hr == S_OK, "Focus leave after destruction failed, hr %#lx.\n", hr);
+    ICoreTextEditContext_remove_TextUpdating(context, token);
+    ICoreTextEditContext_Release(context);
+}
+
 START_TEST(textinput)
 {
     HRESULT hr;
@@ -180,6 +273,7 @@ START_TEST(textinput)
 
     test_CoreInputViewStatics();
     test_CoreInputView();
+    test_desktop_focus();
 
     RoUninitialize();
 }

@@ -151,13 +151,24 @@ HRESULT edit_context_focus(struct core_text_edit_context *context)
     hr = ICoreWindowStatic_GetForCurrentThread(statics, &window);
     ICoreWindowStatic_Release(statics);
     if (FAILED(hr)) return hr;
-    if (!window) return E_ILLEGAL_METHOD_CALL;
-    hr = ICoreWindow_QueryInterface(window, &IID_ICoreWindowInterop, (void **)&interop);
-    ICoreWindow_Release(window);
-    if (FAILED(hr)) return hr;
-    hr = ICoreWindowInterop_get_WindowHandle(interop, &hwnd);
-    ICoreWindowInterop_Release(interop);
-    if (FAILED(hr)) return hr;
+    if (window)
+    {
+        hr = ICoreWindow_QueryInterface(window, &IID_ICoreWindowInterop, (void **)&interop);
+        ICoreWindow_Release(window);
+        if (FAILED(hr)) return hr;
+        hr = ICoreWindowInterop_get_WindowHandle(interop, &hwnd);
+        ICoreWindowInterop_Release(interop);
+        if (FAILED(hr)) return hr;
+    }
+    else
+    {
+        /* Desktop applications can use CoreText without owning a CoreWindow.
+         * Attach to their keyboard target, not another thread's foreground window. */
+        hwnd = GetFocus();
+        if (!hwnd) hwnd = GetActiveWindow();
+        if (!hwnd) return E_ILLEGAL_METHOD_CALL;
+        if (GetWindowThreadProcessId(hwnd, NULL) != context->thread) return RPC_E_WRONG_THREAD;
+    }
     if (GetWindowSubclass(hwnd, text_window_proc, 1, &data))
     {
         previous = (void *)data;
