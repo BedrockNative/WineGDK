@@ -4396,9 +4396,12 @@ static void output_sources( struct makefile *make )
         struct strarray files = get_expanded_make_var_array( make, "NATIVE_DATA" );
         STRARRAY_FOR_EACH( file, &files )
         {
+            const char *slash = strrchr( file, '/' );
+            char *dir = strmake( "$(datadir)/wine/native/%s", get_basename( make->obj_dir ) );
+
+            if (slash) dir = strmake( "%s/%.*s", dir, (int)(slash - file), file );
             strarray_add_uniq( &make->install[INSTALL_LIB], file );
-            install_data_file_src( make, file, file,
-                                   strmake( "$(datadir)/wine/native/%s", get_basename( make->obj_dir ) ));
+            install_data_file_src( make, file, file, dir );
         }
     }
 

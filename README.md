@@ -70,14 +70,30 @@ Then either install Wine:
 make install
 ```
 
-The native packages in `dlls/xgameruntime.threading`, `dlls/dxvk`, and
-`dlls/vkd3d-proton` are installed by `make install` into
+The native packages in `dlls/xgameruntime.threading`, `dlls/dxvk`,
+`dlls/dxvk-nvapi`, and `dlls/vkd3d-proton` are installed by `make install` into
 `lib/wine/native/<architecture>-windows`. New prefixes receive the x64 DLLs
 in `system32` and the i386 graphics DLLs in `syswow64`. XThreading is x64 only.
 DXVK supplies Direct3D 8–11 and DXGI; VKD3D-Proton supplies Direct3D 12 and
 includes the Minecraft patch from the local patched build. Each package has
 a checksum manifest; the graphics packages also retain their upstream README
 and license files, installed under `share/wine/native`.
+
+DXVK-NVAPI 0.9.2 supplies `nvapi64.dll` and `nvofapi64.dll` for x64 and
+`nvapi.dll` for i386. It follows the same prefix installation and override
+rules as the other graphics packages. Set `DXVK_ENABLE_NVAPI=1` when launching
+games that need DXVK's NVAPI compatibility mode. NVIDIA-specific features
+still require a compatible GPU and driver; the package does not include DLSS
+driver libraries.
+
+The optional x86_64 Linux Vulkan Reflex layer is installed alongside its
+manifest under `share/wine/native/dxvk-nvapi/layer`. To enable it, set
+`DXVK_NVAPI_VKREFLEX=1` and add that directory's absolute path to
+`VK_ADD_IMPLICIT_LAYER_PATH` (colon-separated, preserving any existing paths).
+This discovery mechanism requires Vulkan loader 1.3.296 or newer. For a local
+`./build.sh` installation, the directory is
+`build/share/wine/native/dxvk-nvapi/layer`. It is not copied into Windows prefixes
+or enabled globally for other Vulkan applications.
 
 Prefix setup adds `native,builtin` graphics overrides only when no override
 already exists. `wineboot -u` installs missing companions and replaces Wine's

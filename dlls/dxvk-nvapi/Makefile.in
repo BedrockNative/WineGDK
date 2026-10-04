@@ -1,0 +1,3 @@
+x86_64_NATIVE_DLLS = nvapi64.dll nvofapi64.dll
+i386_NATIVE_DLLS = nvapi.dll
+NATIVE_DATA = LICENSE README.md MANIFEST.json layer/VkLayer_DXVK_NVAPI_reflex.json layer/libdxvk_nvapi_vkreflex_layer.so

@@ -1,0 +1,15 @@
+{
+  "version": "0.9.2",
+  "source": "https://github.com/jp7677/dxvk-nvapi/releases/tag/v0.9.2",
+  "archive": "dxvk-nvapi-v0.9.2.tar.gz",
+  "archive_sha256": "60c284223530d643c446c263f1e1a96c6de7b5ff21796219646da734d97a70d6",
+  "files": {
+    "i386-windows/nvapi.dll": "afb3bfad55c4f23acc7f7a2f09946f88c3da61bcf61c5f04771b400264876d19",
+    "x86_64-windows/nvapi64.dll": "1bcf9b68a53f35d94e9e7dfdb68244d74c6300f3979906009478c320a780e12e",
+    "x86_64-windows/nvofapi64.dll": "776d1d354d589551214d7977d951b3cde2bf2a635a38b8d7ef88e6957f9ca26e",
+    "LICENSE": "0f2092e013b5d234835ad2ac04e382fe67eca8810424ba157d527280e062f02c",
+    "README.md": "e887dcba0fc436a357f2355f0fb6ae19b62fe105fe5a26363fa1835408644391",
+    "layer/VkLayer_DXVK_NVAPI_reflex.json": "8c5ceab4ebe1cf25047bb9d9505203ca8b67445ce925d301c77d72c050d61a3b",
+    "layer/libdxvk_nvapi_vkreflex_layer.so": "66e21c3b193fd418bfd13ea9ad6da39c28c70d2a4b355ee4bf78e5ece31220de"
+  }
+}

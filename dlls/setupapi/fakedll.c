@@ -208,7 +208,8 @@ static BOOL is_native_companion( const WCHAR *name )
     static const WCHAR * const names[] =
     {
         L"xgameruntime.dll.threading", L"d3d8.dll", L"d3d9.dll", L"d3d10core.dll",
-        L"d3d11.dll", L"dxgi.dll", L"d3d12.dll", L"d3d12core.dll"
+        L"d3d11.dll", L"dxgi.dll", L"d3d12.dll", L"d3d12core.dll",
+        L"nvapi.dll", L"nvapi64.dll", L"nvofapi64.dll"
     };
     const WCHAR *basename = wcsrchr( name, '\\' );
     unsigned int i;
