@@ -4706,7 +4706,7 @@ static void output_testlist( const struct makefile *make )
 /*******************************************************************
  *         output_gitignore
  */
-static void output_gitignore( const char *dest, struct strarray files )
+static void output_gitignore( const char *dest, struct strarray files, int top_level )
 {
     output_file = create_temp_file( dest );
 
@@ -4716,6 +4716,9 @@ static void output_gitignore( const char *dest, struct strarray files )
         if (!strchr( file, '/' )) output( "/" );
         output( "%s\n", file );
     }
+
+    if (top_level)
+        output( "/build\n/tmp*\n/tools\nconfigure~\nautom4te.cache/*\n" );
 
     if (fclose( output_file )) fatal_perror( "write" );
     output_file = NULL;
@@ -4904,7 +4907,8 @@ static void output_dependencies( struct makefile *make )
     strarray_addall( &ignore_files, make->clean_files );
     if (make->testdll) output_testlist( make );
     if (make->obj_dir && !strcmp( make->obj_dir, "po" )) output_linguas( make );
-    if (!make->src_dir) output_gitignore( obj_dir_path( make, ".gitignore" ), ignore_files );
+    if (!make->src_dir)
+        output_gitignore( obj_dir_path( make, ".gitignore" ), ignore_files, make == top_makefile );
 
     create_file_directories( make, ignore_files );
 
