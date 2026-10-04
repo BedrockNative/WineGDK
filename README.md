@@ -86,6 +86,27 @@ games that need DXVK's NVAPI compatibility mode. NVIDIA-specific features
 still require a compatible GPU and driver; the package does not include DLSS
 driver libraries.
 
+NGX discovery: on prefix startup/update, WineGDK checks `NVIDIA_WINE_DLL_DIR`
+(an absolute Unix directory) or common system NVIDIA Wine-driver directories.
+If a Windows x64 NGX DLL is present, it registers that directory as
+`HKLM\Software\NVIDIA Corporation\Global\NGXCore\FullPath`, allowing the
+application's NGX loader to find the installed driver. Existing registry values
+are preserved, even if empty or invalid. An explicit invalid directory does not
+fall back to another driver. No proprietary libraries are copied into the prefix
+or bundled in WineGDK, and no host packages are modified. After moving/removing a
+driver installation, review an existing custom FullPath before using a new one.
+
+For DLSS games, pass `DXVK_ENABLE_NVAPI=1` and `NVIDIA_WINE_DLL_DIR` to the game
+as well as prefix initialization. Hybrid NVIDIA systems may also need PRIME
+offload; this remains a launcher/user policy, not a global Wine default.
+`DXVK_NVAPI_SET_NGX_DEBUG_OPTIONS=DLSSIndicator=0` clears a previously enabled
+DLSS diagnostic watermark when NVAPI initializes. DLSS still requires a supported
+NVIDIA GPU/driver and a game that actually integrates it. This is not a BetterRTX
+shader compatibility patch; preset/game compatibility rules still apply.
+
+Local regression test (private prefix, no game/GPU required):
+`bash tools/tests/ngx-discovery.sh /absolute/path/to/installed/wine`.
+
 The optional x86_64 Linux Vulkan Reflex layer is installed alongside its
 manifest under `share/wine/native/dxvk-nvapi/layer`. To enable it, set
 `DXVK_NVAPI_VKREFLEX=1` and add that directory's absolute path to

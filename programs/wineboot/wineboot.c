@@ -87,6 +87,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(wineboot);
 extern BOOL shutdown_close_windows( BOOL force );
 extern BOOL shutdown_all_desktops( BOOL force );
 extern void kill_processes( BOOL kill_desktop );
+extern void setup_ngx_driver(void);
 
 static struct wine_log_output progress_output;
 
@@ -2000,6 +2001,7 @@ int __cdecl main( int argc, char *argv[] )
         progress_event("end", "services-start", 0);
     }
     if (init || update) update_wineprefix( update );
+    setup_ngx_driver();
 
     create_volatile_environment_registry_key();
     create_known_dlls();
