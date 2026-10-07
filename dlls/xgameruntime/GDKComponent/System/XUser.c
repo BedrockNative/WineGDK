@@ -900,17 +900,6 @@ static HRESULT user_ensure_device_and_title_tokens( struct XUser *impl )
                         SUCCEEDED(hr_rps = parse_json( (char *)buffer, bufferSize, &object )) &&
                         SUCCEEDED(hr_rps = get_json_string( object, L"Token", &impl->titleToken )))
                     {
-                        {
-                            FILE *tf = fopen( "/home/perfect/OrionBE/logs/title-token-dump.txt", "a" );
-                            if (tf)
-                            {
-                                fprintf( tf, "title.auth RpsTicket OK TitleIdHint=%s bytes=%zu\n",
-                                         titleIdStr, bufferSize );
-                                fwrite( buffer, 1, bufferSize < 4000 ? bufferSize : 4000, tf );
-                                fputc( '\n', tf );
-                                fclose( tf );
-                            }
-                        }
                         free( access ); access = NULL;
                         free( buffer ); buffer = NULL; bufferSize = 0;
                         IJsonObject_Release( object ); object = NULL;
@@ -956,31 +945,11 @@ static HRESULT user_ensure_device_and_title_tokens( struct XUser *impl )
                 if (FAILED(hr = user_http_request_signed( impl, L"title.auth.xboxlive.com", L"/title/authenticate",
                                                           body, &buffer, &bufferSize )))
                 {
-                    FILE *tf = fopen( "/home/perfect/OrionBE/logs/title-token-dump.txt", "a" );
-                    if (tf)
-                    {
-                        fprintf( tf, "title.auth PoP FAIL TitleId=%s hr=%#lx bytes=%zu\n",
-                                 title_attempts[ai], (unsigned long)hr, bufferSize );
-                        if (buffer && bufferSize)
-                            fwrite( buffer, 1, bufferSize < 2000 ? bufferSize : 2000, tf );
-                        fputc( '\n', tf );
-                        fclose( tf );
-                    }
                     WARN( "Title PoP auth TitleId=%s failed, hr %#lx.\n", title_attempts[ai], hr );
                     continue;
                 }
                 if (FAILED(hr = parse_json( (char *)buffer, bufferSize, &object ))) continue;
                 if (FAILED(hr = get_json_string( object, L"Token", &impl->titleToken ))) continue;
-                {
-                    FILE *tf = fopen( "/home/perfect/OrionBE/logs/title-token-dump.txt", "a" );
-                    if (tf)
-                    {
-                        fprintf( tf, "title.auth PoP OK TitleId=%s bytes=%zu\n", title_attempts[ai], bufferSize );
-                        fwrite( buffer, 1, bufferSize < 4000 ? bufferSize : 4000, tf );
-                        fputc( '\n', tf );
-                        fclose( tf );
-                    }
-                }
                 TRACE( "Obtained Xbox title token for TitleId %s.\n", title_attempts[ai] );
                 goto title_ok;
             }
@@ -1011,16 +980,6 @@ static HRESULT user_ensure_device_and_title_tokens( struct XUser *impl )
         }
         if (FAILED(hr = parse_json( (char *)buffer, bufferSize, &object ))) goto cleanup;
         if (FAILED(hr = get_json_string( object, L"Token", &impl->titleToken ))) goto cleanup;
-        {
-            FILE *tf = fopen( "/home/perfect/OrionBE/logs/title-token-dump.txt", "a" );
-            if (tf)
-            {
-                fprintf( tf, "title.auth legacy RPS OK TitleId=%s bytes=%zu\n", titleIdStr, bufferSize );
-                fwrite( buffer, 1, bufferSize < 4000 ? bufferSize : 4000, tf );
-                fputc( '\n', tf );
-                fclose( tf );
-            }
-        }
         TRACE( "Obtained Xbox title token for TitleId %s.\n", titleIdStr );
 
 title_ok:
@@ -2001,7 +1960,7 @@ static HRESULT WINAPI XUserAddProvider( XAsyncOp op, const XAsyncProviderData *d
                 clear_msa_user();
             }
 #endif
-            /* OrionBE: Minecraft often uses AddDefaultUserAllowingUI; if Xodus MSA fails
+            /* Minecraft often uses AddDefaultUserAllowingUI; if Xodus MSA fails
              * (or socket missing), still try HKLM\Software\Wine\WineGDK RefreshToken. */
             if (context->options & XUserAddOptions_AddDefaultUserSilently ||
                 context->options & XUserAddOptions_AddDefaultUserAllowingUI)

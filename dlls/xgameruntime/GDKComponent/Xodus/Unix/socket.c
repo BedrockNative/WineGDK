@@ -132,7 +132,7 @@ static NTSTATUS conn_sock( void *args )
     int error;
     const char *override;
 
-    /* OrionBE / pressure-vessel: host $XDG_RUNTIME_DIR is filtered; prefer an explicit
+    /* In pressure-vessel, host $XDG_RUNTIME_DIR is filtered; prefer an explicit
      * path under $HOME (visible inside steamrt without STEAM_COMPAT_MOUNTS). */
     override = getenv( "XODUS_SOCKET" );
     if (override && override[0])

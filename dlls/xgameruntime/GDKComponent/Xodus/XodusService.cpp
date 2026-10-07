@@ -261,7 +261,7 @@ _CLEANUP:
         }
 
         if (FAILED(hr = asyncop->GetResults( &responsePacket ))) goto cleanup;
-        /* OrionBE: a timed out request completes with S_OK and a NULL packet — don't dereference it. */
+        /* A timed out request completes with S_OK and a NULL packet; don't dereference it. */
         if (!responsePacket)
         {
             WARN( "Xodus MSA token request returned no response (timed out?).\n" );

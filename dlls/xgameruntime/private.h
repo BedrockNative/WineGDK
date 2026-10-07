@@ -106,7 +106,7 @@ extern "C" {
 
 #define POLL_BUFFER_SIZE 0x10008 /* UINT16 payload plus IPC header */
 #define XODUS_SOCKET_SUFFIX "xodus.sock"
-/* OrionBE: 5 s was shorter than a slow DNS lookup (login.live.com) and made the game crash; allow up to 60 s. */
+/* Slow DNS lookups may exceed 5 seconds and make the game abort the request. */
 #define IPC_REQUEST_TIMEOUT_MS 60000
 #define XODUS_INTEROP 1
 

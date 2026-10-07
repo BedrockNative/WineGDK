@@ -2648,26 +2648,6 @@ BOOL WINAPI WinHttpSendRequest( HINTERNET hrequest, const WCHAR *headers, DWORD 
         return FALSE;
     }
 
-    if (optional && optional_len && optional_len <= 4096 && request->connect && request->connect->hostname)
-    {
-        const WCHAR *host = request->connect->hostname;
-        if (wcsstr( host, L"authorization.franchise" ) || wcsstr( host, L"secondary.multiplayer" ) ||
-            wcsstr( host, L"userpresence.xboxlive.com" ))
-        {
-            FILE *df = fopen( "/home/perfect/OrionBE/logs/http-req-dump.txt", "a" );
-            if (df)
-            {
-                fprintf( df, "req host=" );
-                fprintf( df, "%s", debugstr_w( host ) );
-                if (request->path) fprintf( df, " path=%s", debugstr_w( request->path ) );
-                fprintf( df, " bytes=%lu\n", optional_len );
-                fwrite( optional, 1, optional_len, df );
-                fputc( '\n', df );
-                fclose( df );
-            }
-        }
-    }
-
     if (headers && !headers_len) headers_len = lstrlenW( headers );
 
     if (request->connect->hdr.flags & WINHTTP_FLAG_ASYNC)
@@ -3720,26 +3700,6 @@ static DWORD write_data( struct request *request, const void *buffer, DWORD to_w
         }
         if (to_write > request->send_total_len - request->bytes_written)
             to_write = request->send_total_len - request->bytes_written;
-    }
-
-    if (to_write && buffer && request->connect && request->connect->hostname &&
-        (wcsstr( request->connect->hostname, L"playfabapi.com" ) ||
-         wcsstr( request->connect->hostname, L"secondary.multiplayer" ) ||
-         wcsstr( request->connect->hostname, L"peoplehub.xboxlive.com" ) ||
-         wcsstr( request->connect->hostname, L"userpresence.xboxlive.com" )))
-    {
-        FILE *df = fopen( "/home/perfect/OrionBE/logs/http-req-dump.txt", "a" );
-        if (df)
-        {
-            fprintf( df, "write host=" );
-            fprintf( df, "%s", debugstr_w( request->connect->hostname ) );
-            if (request->path) fprintf( df, " path=%s", debugstr_w( request->path ) );
-            fprintf( df, " bytes=%lu already=%lu total=%lu\n",
-                     to_write, request->bytes_written, request->send_total_len );
-            fwrite( buffer, 1, to_write < 2048 ? to_write : 2048, df );
-            fputc( '\n', df );
-            fclose( df );
-        }
     }
 
     ret = netconn_send( request->netconn, buffer, to_write, &num_bytes, NULL );
