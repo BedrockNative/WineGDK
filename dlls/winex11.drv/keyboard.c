@@ -1625,7 +1625,7 @@ static const struct layout_id_map_entry
     { "bd", MAKELANGID(LANG_BANGLA, SUBLANG_DEFAULT) },
     { "be", MAKELANGID(LANG_FRENCH, SUBLANG_FRENCH_BELGIAN) },
     { "bg", MAKELANGID(LANG_BULGARIAN, SUBLANG_DEFAULT) },
-    { "br", MAKELANGID(LANG_PORTUGUESE, 2) },
+    { "br", MAKELANGID(LANG_PORTUGUESE, SUBLANG_PORTUGUESE_BRAZILIAN) },
     { "brai", MAKELANGID(LANG_NEUTRAL, SUBLANG_CUSTOM_DEFAULT) },
     { "bt", MAKELANGID(LANG_TIBETAN, 3) },
     { "bw", MAKELANGID(LANG_TSWANA, SUBLANG_TSWANA_BOTSWANA) },
@@ -1745,6 +1745,7 @@ static const struct klid_map_entry
     DWORD klid;
 } klid_map[] =
 {
+    { "br", "thinkpad", 0x00010416 },
     { "us", "dvorak", 0x00010409 },
     { "us", "dvorak-l", 0x00030409 },
     { "us", "dvorak-r", 0x00040409 },

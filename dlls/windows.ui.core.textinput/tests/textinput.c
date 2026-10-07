@@ -78,12 +78,42 @@ static void test_CoreInputViewStatics(void)
     ok(ref == 1, "Got unexpected refcount %ld.\n", ref);
 }
 
+static LONG input_view_handler_refs = 1;
+
+static HRESULT WINAPI input_view_handler_QueryInterface(IUnknown *iface, REFIID iid, void **out)
+{
+    if (!out) return E_POINTER;
+    *out = NULL;
+    if (!IsEqualGUID(iid, &IID_IUnknown)) return E_NOINTERFACE;
+    *out = iface;
+    IUnknown_AddRef(iface);
+    return S_OK;
+}
+
+static ULONG WINAPI input_view_handler_AddRef(IUnknown *iface)
+{
+    return InterlockedIncrement(&input_view_handler_refs);
+}
+
+static ULONG WINAPI input_view_handler_Release(IUnknown *iface)
+{
+    return InterlockedDecrement(&input_view_handler_refs);
+}
+
+static const IUnknownVtbl input_view_handler_vtbl =
+{
+    input_view_handler_QueryInterface, input_view_handler_AddRef, input_view_handler_Release
+};
+
 static void test_CoreInputView(void)
 {
     ICoreInputViewStatics *core_input_view_statics;
     IVectorView_CoreInputViewOcclusion *occlusions;
     ICoreInputView *core_input_view;
+    ICoreInputView *same_view;
     IActivationFactory *factory;
+    IUnknown handler = {&input_view_handler_vtbl};
+    EventRegistrationToken first, second;
     HSTRING str = NULL;
     HRESULT hr;
     LONG ref;
@@ -107,6 +137,10 @@ static void test_CoreInputView(void)
 
     hr = ICoreInputViewStatics_GetForCurrentView(core_input_view_statics, &core_input_view);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    hr = ICoreInputViewStatics_GetForCurrentView(core_input_view_statics, &same_view);
+    ok(hr == S_OK && same_view == core_input_view, "Got hr %#lx and view %p, expected %p.\n",
+       hr, same_view, core_input_view);
+    if (SUCCEEDED(hr)) ICoreInputView_Release(same_view);
 
     check_interface(core_input_view, &IID_IUnknown, TRUE);
     check_interface(core_input_view, &IID_IInspectable, TRUE);
@@ -120,6 +154,19 @@ static void test_CoreInputView(void)
     hr = ICoreInputView_GetCoreInputViewOcclusions(core_input_view, &occlusions);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     IVectorView_CoreInputViewOcclusion_Release(occlusions);
+
+    hr = ICoreInputView_add_OcclusionsChanged(core_input_view,
+            (ITypedEventHandler_CoreInputView_CoreInputViewOcclusionsChangedEventArgs *)&handler, &first);
+    ok(hr == S_OK && first.value, "Got hr %#lx and token %I64x.\n", hr, first.value);
+    ok(input_view_handler_refs == 2, "Got unexpected handler refs %ld.\n", input_view_handler_refs);
+    hr = ICoreInputView_add_OcclusionsChanged(core_input_view,
+            (ITypedEventHandler_CoreInputView_CoreInputViewOcclusionsChangedEventArgs *)&handler, &second);
+    ok(hr == S_OK && second.value != first.value, "Got hr %#lx and token %I64x.\n", hr, second.value);
+    ok(input_view_handler_refs == 3, "Got unexpected handler refs %ld.\n", input_view_handler_refs);
+    hr = ICoreInputView_remove_OcclusionsChanged(core_input_view, first);
+    ok(hr == S_OK && input_view_handler_refs == 2, "Got hr %#lx and handler refs %ld.\n", hr, input_view_handler_refs);
+    hr = ICoreInputView_remove_OcclusionsChanged(core_input_view, second);
+    ok(hr == S_OK && input_view_handler_refs == 1, "Got hr %#lx and handler refs %ld.\n", hr, input_view_handler_refs);
 
     ICoreInputView_Release(core_input_view);
 

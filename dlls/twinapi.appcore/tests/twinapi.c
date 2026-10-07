@@ -313,7 +313,9 @@ static void test_CoreApplication(void)
 static void test_DataTransferManager(void)
 {
     static const WCHAR *class_name = RuntimeClass_Windows_ApplicationModel_DataTransfer_DataTransferManager;
+    IDataTransferManagerStatics2 *statics2;
     IActivationFactory *factory;
+    boolean supported = TRUE;
     HSTRING str;
     HRESULT hr;
 
@@ -335,6 +337,14 @@ static void test_DataTransferManager(void)
     check_interface( factory, &IID_IActivationFactory, TRUE );
     check_interface( factory, &IID_IDataTransferManagerInterop, TRUE );
     check_interface( factory, &IID_IDataTransferManagerStatics, TRUE );
+    check_interface( factory, &IID_IDataTransferManagerStatics2, TRUE );
+
+    hr = IActivationFactory_QueryInterface( factory, &IID_IDataTransferManagerStatics2, (void **)&statics2 );
+    ok( hr == S_OK, "got hr %#lx.\n", hr );
+    hr = IDataTransferManagerStatics2_IsSupported( statics2, &supported );
+    ok( hr == S_OK, "got hr %#lx.\n", hr );
+    ok( !supported, "got supported %u.\n", supported );
+    IDataTransferManagerStatics2_Release( statics2 );
 
     IActivationFactory_Release( factory );
 }

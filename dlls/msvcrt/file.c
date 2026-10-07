@@ -2512,8 +2512,13 @@ int CDECL _wsopen_dispatch( const wchar_t* path, int oflags, int shflags, int pm
 
   hand = CreateFileW(path, access, sharing, &sa, creation, attrib, 0);
   if (hand == INVALID_HANDLE_VALUE)  {
-    WARN(":failed-last error (%ld)\n", GetLastError());
-    msvcrt_set_errno(GetLastError());
+    DWORD error = GetLastError();
+
+    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+      TRACE(":file not found (%ld)\n", error);
+    else
+      WARN(":failed-last error (%ld)\n", error);
+    msvcrt_set_errno(error);
     return *_errno();
   }
 

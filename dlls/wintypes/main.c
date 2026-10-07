@@ -171,13 +171,41 @@ static HRESULT STDMETHODCALLTYPE api_information_statics_IsTypePresent(
 static HRESULT STDMETHODCALLTYPE api_information_statics_IsMethodPresent(
         IApiInformationStatics *iface, HSTRING type_name, HSTRING method_name, BOOLEAN *value)
 {
-    FIXME("iface %p, type_name %s, method_name %s, value %p stub!\n", iface,
-            debugstr_hstring(type_name), debugstr_hstring(method_name), value);
+    static const struct
+    {
+        const WCHAR *type_name;
+        const WCHAR *method_name;
+        UINT32 input_parameter_count;
+    }
+    methods[] =
+    {
+        {L"Windows.Foundation.Metadata.IApiInformationStatics", L"IsTypePresent", 1},
+        {L"Windows.ApplicationModel.DataTransfer.DataTransferManager", L"IsSupported", 0},
+    };
+    const WCHAR *type, *method;
+    unsigned int i;
+
+    TRACE("iface %p, type_name %s, method_name %s, value %p.\n", iface,
+          debugstr_hstring(type_name), debugstr_hstring(method_name), value);
 
     if (!type_name)
         return E_INVALIDARG;
+    if (!value)
+        return E_POINTER;
 
     *value = FALSE;
+    if (!method_name) return S_OK;
+
+    type = WindowsGetStringRawBuffer(type_name, NULL);
+    method = WindowsGetStringRawBuffer(method_name, NULL);
+    for (i = 0; i < ARRAY_SIZE(methods); ++i)
+    {
+        if (!wcscmp(type, methods[i].type_name) && !wcscmp(method, methods[i].method_name))
+        {
+            *value = TRUE;
+            break;
+        }
+    }
     return S_OK;
 }
 
@@ -185,14 +213,44 @@ static HRESULT STDMETHODCALLTYPE api_information_statics_IsMethodPresentWithArit
         IApiInformationStatics *iface, HSTRING type_name, HSTRING method_name,
         UINT32 input_parameter_count, BOOLEAN *value)
 {
-    FIXME("iface %p, type_name %s, method_name %s, input_parameter_count %u, value %p stub!\n",
-            iface, debugstr_hstring(type_name), debugstr_hstring(method_name),
-            input_parameter_count, value);
+    static const struct
+    {
+        const WCHAR *type_name;
+        const WCHAR *method_name;
+        UINT32 input_parameter_count;
+    }
+    methods[] =
+    {
+        {L"Windows.Foundation.Metadata.IApiInformationStatics", L"IsTypePresent", 1},
+        {L"Windows.ApplicationModel.DataTransfer.DataTransferManager", L"IsSupported", 0},
+    };
+    const WCHAR *type, *method;
+    unsigned int i;
+
+    TRACE("iface %p, type_name %s, method_name %s, input_parameter_count %u, value %p.\n",
+          iface, debugstr_hstring(type_name), debugstr_hstring(method_name),
+          input_parameter_count, value);
 
     if (!type_name)
         return E_INVALIDARG;
+    if (!value)
+        return E_POINTER;
 
-    return E_NOTIMPL;
+    *value = FALSE;
+    if (!method_name) return S_OK;
+
+    type = WindowsGetStringRawBuffer(type_name, NULL);
+    method = WindowsGetStringRawBuffer(method_name, NULL);
+    for (i = 0; i < ARRAY_SIZE(methods); ++i)
+    {
+        if (!wcscmp(type, methods[i].type_name) && !wcscmp(method, methods[i].method_name) &&
+            input_parameter_count == methods[i].input_parameter_count)
+        {
+            *value = TRUE;
+            break;
+        }
+    }
+    return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE api_information_statics_IsEventPresent(
@@ -238,8 +296,8 @@ static unsigned int api_property_access(HSTRING type_name, HSTRING property_name
 static HRESULT STDMETHODCALLTYPE api_information_statics_IsPropertyPresent(
         IApiInformationStatics *iface, HSTRING type_name, HSTRING property_name, BOOLEAN *value)
 {
-    FIXME("iface %p, type_name %s, property_name %s, value %p semi-stub.\n", iface,
-            debugstr_hstring(type_name), debugstr_hstring(property_name), value);
+    TRACE("iface %p, type_name %s, property_name %s, value %p.\n", iface,
+          debugstr_hstring(type_name), debugstr_hstring(property_name), value);
 
     if (!type_name || !property_name)
         return E_INVALIDARG;
@@ -253,8 +311,8 @@ static HRESULT STDMETHODCALLTYPE api_information_statics_IsReadOnlyPropertyPrese
         IApiInformationStatics *iface, HSTRING type_name, HSTRING property_name,
         BOOLEAN *value)
 {
-    FIXME("iface %p, type_name %s, property_name %s, value %p semi-stub.\n", iface,
-            debugstr_hstring(type_name), debugstr_hstring(property_name), value);
+    TRACE("iface %p, type_name %s, property_name %s, value %p.\n", iface,
+          debugstr_hstring(type_name), debugstr_hstring(property_name), value);
 
     if (!type_name || !property_name)
         return E_INVALIDARG;
@@ -267,8 +325,8 @@ static HRESULT STDMETHODCALLTYPE api_information_statics_IsReadOnlyPropertyPrese
 static HRESULT STDMETHODCALLTYPE api_information_statics_IsWriteablePropertyPresent(
         IApiInformationStatics *iface, HSTRING type_name, HSTRING property_name, BOOLEAN *value)
 {
-    FIXME("iface %p, type_name %s, property_name %s, value %p semi-stub.\n", iface,
-            debugstr_hstring(type_name), debugstr_hstring(property_name), value);
+    TRACE("iface %p, type_name %s, property_name %s, value %p.\n", iface,
+          debugstr_hstring(type_name), debugstr_hstring(property_name), value);
 
     if (!type_name || !property_name)
         return E_INVALIDARG;

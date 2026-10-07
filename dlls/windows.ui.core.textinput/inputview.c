@@ -19,8 +19,19 @@
 
 #include "private.h"
 #include "weakref.h"
+#include "wine/winrt_events.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(coreinputview);
+
+enum input_view_event
+{
+    INPUT_VIEW_EVENT_OCCLUSIONS_CHANGED,
+    INPUT_VIEW_EVENT_XY_FOCUS_TRANSFERRING,
+    INPUT_VIEW_EVENT_XY_FOCUS_TRANSFERRED,
+    INPUT_VIEW_EVENT_PRIMARY_VIEW_SHOWING,
+    INPUT_VIEW_EVENT_PRIMARY_VIEW_HIDING,
+    INPUT_VIEW_EVENT_COUNT
+};
 
 struct core_input_view
 {
@@ -29,6 +40,7 @@ struct core_input_view
     ICoreInputView3 ICoreInputView3_iface;
     ICoreInputView4 ICoreInputView4_iface;
     struct weak_reference_source weak_reference_source;
+    struct winrt_event events[INPUT_VIEW_EVENT_COUNT];
 };
 
 static inline struct core_input_view *impl_from_ICoreInputView(ICoreInputView *iface)
@@ -42,6 +54,7 @@ static HRESULT WINAPI core_input_view_QueryInterface(ICoreInputView *iface, REFI
 
     TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
 
+    if (!out) return E_POINTER;
     *out = NULL;
 
     if (IsEqualGUID(iid, &IID_IUnknown)
@@ -94,42 +107,53 @@ static ULONG WINAPI core_input_view_Release(ICoreInputView *iface)
     TRACE("iface %p, ref %lu.\n", iface, ref);
 
     if (!ref)
+    {
+        unsigned int i;
+        for (i = 0; i < ARRAY_SIZE(impl->events); ++i) winrt_event_clear(&impl->events[i]);
         free(impl);
+    }
     return ref;
 }
 
 static HRESULT WINAPI core_input_view_GetIids(ICoreInputView *iface, ULONG *iid_count, IID **iids)
 {
-    FIXME("iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids);
-    return E_NOTIMPL;
+    if (!iid_count || !iids) return E_POINTER;
+    *iid_count = 0;
+    if (!(*iids = CoTaskMemAlloc(4 * sizeof(**iids)))) return E_OUTOFMEMORY;
+    (*iids)[0] = IID_ICoreInputView;
+    (*iids)[1] = IID_ICoreInputView2;
+    (*iids)[2] = IID_ICoreInputView3;
+    (*iids)[3] = IID_ICoreInputView4;
+    *iid_count = 4;
+    return S_OK;
 }
 
 static HRESULT WINAPI core_input_view_GetRuntimeClassName(ICoreInputView *iface, HSTRING *class_name)
 {
-    FIXME("iface %p, class_name %p stub!\n", iface, class_name);
-    return E_NOTIMPL;
+    const WCHAR *name = RuntimeClass_Windows_UI_ViewManagement_Core_CoreInputView;
+    if (!class_name) return E_POINTER;
+    return WindowsCreateString(name, wcslen(name), class_name);
 }
 
 static HRESULT WINAPI core_input_view_GetTrustLevel(ICoreInputView *iface, TrustLevel *trust_level)
 {
-    FIXME("iface %p, trust_level %p stub!\n", iface, trust_level);
-    return E_NOTIMPL;
+    if (!trust_level) return E_POINTER;
+    *trust_level = BaseTrust;
+    return S_OK;
 }
 
 static HRESULT WINAPI core_input_view_add_OcclusionsChanged(ICoreInputView *iface,
                                                             ITypedEventHandler_CoreInputView_CoreInputViewOcclusionsChangedEventArgs *handler,
                                                             EventRegistrationToken *token)
 {
-    FIXME("iface %p, handler %p, token %p stub!\n", iface, handler, token);
-    token->value = 0xdeadbeef;
-    return S_OK;
+    return winrt_event_add(&impl_from_ICoreInputView(iface)->events[INPUT_VIEW_EVENT_OCCLUSIONS_CHANGED],
+                           handler, token);
 }
 
 static HRESULT WINAPI core_input_view_remove_OcclusionsChanged(ICoreInputView *iface,
                                                                EventRegistrationToken token)
 {
-    FIXME("iface %p, token %I64x stub!\n", iface, token.value);
-    return E_NOTIMPL;
+    return winrt_event_remove(&impl_from_ICoreInputView(iface)->events[INPUT_VIEW_EVENT_OCCLUSIONS_CHANGED], token);
 }
 
 static HRESULT WINAPI core_input_view_GetCoreInputViewOcclusions(ICoreInputView *iface,
@@ -145,7 +169,8 @@ static HRESULT WINAPI core_input_view_GetCoreInputViewOcclusions(ICoreInputView 
     IVector_CoreInputViewOcclusion *vector;
     HRESULT hr;
 
-    FIXME("iface %p, result %p stub!\n", iface, result);
+    if (!result) return E_POINTER;
+    *result = NULL;
 
     if (SUCCEEDED(hr = vector_create(&iids, (void **)&vector)))
     {
@@ -158,14 +183,16 @@ static HRESULT WINAPI core_input_view_GetCoreInputViewOcclusions(ICoreInputView 
 
 static HRESULT WINAPI core_input_view_TryShowPrimaryView(ICoreInputView *iface, boolean *result)
 {
-    FIXME("iface %p, boolean %p stub!\n", iface, result);
+    TRACE("iface %p, result %p.\n", iface, result);
+    if (!result) return E_POINTER;
     *result = TRUE;
     return S_OK;
 }
 
 static HRESULT WINAPI core_input_view_TryHidePrimaryView(ICoreInputView *iface, boolean *result)
 {
-    FIXME("iface %p, boolean %p stub!\n", iface, result);
+    TRACE("iface %p, result %p.\n", iface, result);
+    if (!result) return E_POINTER;
     *result = TRUE;
     return S_OK;
 }
@@ -193,30 +220,28 @@ static HRESULT WINAPI core_input_view2_add_XYFocusTransferringFromPrimaryView(IC
                                                                               ITypedEventHandler_CoreInputView_CoreInputViewTransferringXYFocusEventArgs *handler,
                                                                               EventRegistrationToken *token)
 {
-    FIXME("iface %p, handler %p, token %p stub!\n", iface, handler, token);
-    return E_NOTIMPL;
+    return winrt_event_add(&impl_from_ICoreInputView2(iface)->events[INPUT_VIEW_EVENT_XY_FOCUS_TRANSFERRING],
+                           handler, token);
 }
 
 static HRESULT WINAPI core_input_view2_remove_XYFocusTransferringFromPrimaryView(ICoreInputView2 *iface,
                                                                                  EventRegistrationToken token)
 {
-    FIXME("iface %p, token %I64x stub!\n", iface, token.value);
-    return E_NOTIMPL;
+    return winrt_event_remove(&impl_from_ICoreInputView2(iface)->events[INPUT_VIEW_EVENT_XY_FOCUS_TRANSFERRING], token);
 }
 
 static HRESULT WINAPI core_input_view2_add_XYFocusTransferredToPrimaryView(ICoreInputView2 *iface,
                                                                            ITypedEventHandler_CoreInputView_IInspectable *handler,
                                                                            EventRegistrationToken *token)
 {
-    FIXME("iface %p, handler %p, token %p stub!\n", iface, handler, token);
-    return E_NOTIMPL;
+    return winrt_event_add(&impl_from_ICoreInputView2(iface)->events[INPUT_VIEW_EVENT_XY_FOCUS_TRANSFERRED],
+                           handler, token);
 }
 
 static HRESULT WINAPI core_input_view2_remove_XYFocusTransferredToPrimaryView(ICoreInputView2 *iface,
                                                                               EventRegistrationToken token)
 {
-    FIXME("iface %p, token %I64x stub!\n", iface, token.value);
-    return E_NOTIMPL;
+    return winrt_event_remove(&impl_from_ICoreInputView2(iface)->events[INPUT_VIEW_EVENT_XY_FOCUS_TRANSFERRED], token);
 }
 
 static HRESULT WINAPI core_input_view2_TryTransferXYFocusToPrimaryView(ICoreInputView2 *iface,
@@ -250,7 +275,8 @@ DEFINE_IINSPECTABLE(core_input_view3, ICoreInputView3, struct core_input_view, I
 
 static HRESULT WINAPI core_input_view3_TryShow(ICoreInputView3 *iface, boolean *result)
 {
-    FIXME("iface %p, result %p stub!\n", iface, result);
+    if (!result) return E_POINTER;
+    *result = TRUE;
     return S_OK;
 }
 
@@ -258,15 +284,15 @@ static HRESULT WINAPI core_input_view3_TryShowWithKind(ICoreInputView3 *iface,
                                                        CoreInputViewKind type,
                                                        boolean *result)
 {
-    FIXME("iface %p, type %d, result %p stub!\n", iface, type, result);
-    if ( result ) *result = TRUE;
+    if (!result) return E_POINTER;
+    *result = TRUE;
     return S_OK;
 }
 
 static HRESULT WINAPI core_input_view3_TryHide(ICoreInputView3 *iface, boolean *result)
 {
-    FIXME("iface %p, result %p stub!\n", iface, result);
-    if ( result ) *result = TRUE;
+    if (!result) return E_POINTER;
+    *result = TRUE;
     return S_OK;
 }
 
@@ -291,30 +317,28 @@ static HRESULT WINAPI core_input_view4_add_PrimaryViewShowing(ICoreInputView4 *i
                                                               ITypedEventHandler_CoreInputView_CoreInputViewShowingEventArgs *handler,
                                                               EventRegistrationToken *token)
 {
-    FIXME("iface %p, handler %p, token %p stub!\n", iface, handler, token);
-    return E_NOTIMPL;
+    return winrt_event_add(&impl_from_ICoreInputView4(iface)->events[INPUT_VIEW_EVENT_PRIMARY_VIEW_SHOWING],
+                           handler, token);
 }
 
 static HRESULT WINAPI core_input_view4_remove_PrimaryViewShowing(ICoreInputView4 *iface,
                                                                  EventRegistrationToken token)
 {
-    FIXME("iface %p, token %I64x stub!\n", iface, token.value);
-    return E_NOTIMPL;
+    return winrt_event_remove(&impl_from_ICoreInputView4(iface)->events[INPUT_VIEW_EVENT_PRIMARY_VIEW_SHOWING], token);
 }
 
 static HRESULT WINAPI core_input_view4_add_PrimaryViewHiding(ICoreInputView4 *iface,
                                                              ITypedEventHandler_CoreInputView_CoreInputViewHidingEventArgs *handler,
                                                              EventRegistrationToken *token)
 {
-    FIXME("iface %p, handler %p, token %p stub!\n", iface, handler, token);
-    return S_OK;
+    return winrt_event_add(&impl_from_ICoreInputView4(iface)->events[INPUT_VIEW_EVENT_PRIMARY_VIEW_HIDING],
+                           handler, token);
 }
 
 static HRESULT WINAPI core_input_view4_remove_PrimaryViewHiding(ICoreInputView4 *iface,
                                                                 EventRegistrationToken token)
 {
-    FIXME("iface %p, token %I64x stub!\n", iface, token.value);
-    return E_NOTIMPL;
+    return winrt_event_remove(&impl_from_ICoreInputView4(iface)->events[INPUT_VIEW_EVENT_PRIMARY_VIEW_HIDING], token);
 }
 
 static const struct ICoreInputView4Vtbl core_input_view4_vtbl =
@@ -367,7 +391,10 @@ static HRESULT WINAPI factory_QueryInterface(IActivationFactory *iface, REFIID i
         return S_OK;
     }
 
-    FIXME("%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid(iid));
+    if (IsEqualGUID(iid, &IID_IAgileObject))
+        TRACE("factory is not agile.\n");
+    else
+        FIXME("%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid(iid));
     *out = NULL;
     return E_NOINTERFACE;
 }
@@ -428,13 +455,41 @@ static const struct IActivationFactoryVtbl factory_vtbl =
 DEFINE_IINSPECTABLE(core_input_view_statics, ICoreInputViewStatics, struct core_input_view_statics,
                     IActivationFactory_iface)
 
+static INIT_ONCE current_view_once = INIT_ONCE_STATIC_INIT;
+static DWORD current_view_slot = FLS_OUT_OF_INDEXES;
+
+static void CALLBACK release_current_view(void *data)
+{
+    struct core_input_view *view = data;
+    unsigned int i;
+    for (i = 0; i < ARRAY_SIZE(view->events); ++i) winrt_event_clear(&view->events[i]);
+    ICoreInputView_Release(&view->ICoreInputView_iface);
+}
+
+static BOOL CALLBACK init_current_view_slot(INIT_ONCE *once, void *parameter, void **context)
+{
+    current_view_slot = FlsAlloc(release_current_view);
+    return current_view_slot != FLS_OUT_OF_INDEXES;
+}
+
 static HRESULT WINAPI core_input_view_statics_GetForCurrentView(ICoreInputViewStatics *iface,
                                                                 ICoreInputView **result)
 {
     struct core_input_view *view;
     HRESULT hr;
 
-    FIXME("iface %p, result %p semi-stub.\n", iface, result);
+    TRACE("iface %p, result %p.\n", iface, result);
+    if (!result) return E_POINTER;
+    *result = NULL;
+    if (!InitOnceExecuteOnce(&current_view_once, init_current_view_slot, NULL, NULL))
+        return HRESULT_FROM_WIN32(GetLastError());
+
+    if ((view = FlsGetValue(current_view_slot)))
+    {
+        *result = &view->ICoreInputView_iface;
+        ICoreInputView_AddRef(*result);
+        return S_OK;
+    }
 
     if (!(view = calloc(1, sizeof(*view))))
     {
@@ -455,7 +510,14 @@ static HRESULT WINAPI core_input_view_statics_GetForCurrentView(ICoreInputViewSt
         return hr;
     }
 
+    if (!FlsSetValue(current_view_slot, view))
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        ICoreInputView_Release(&view->ICoreInputView_iface);
+        return hr;
+    }
     *result = &view->ICoreInputView_iface;
+    ICoreInputView_AddRef(*result);
     return S_OK;
 }
 
