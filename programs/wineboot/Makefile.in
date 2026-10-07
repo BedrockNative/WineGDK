@@ -6,6 +6,7 @@ EXTRADLLFLAGS = -mconsole
 
 SOURCES = \
 	log_output.c \
+	ngx.c \
 	shutdown.c \
 	wineboot.c \
 	wineboot.man.in \
