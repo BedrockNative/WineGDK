@@ -343,7 +343,13 @@ static BOOL session_set_option( struct object_header *hdr, DWORD option, void *b
             SetLastError( ERROR_INSUFFICIENT_BUFFER );
             return FALSE;
         }
-        FIXME( "WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL: %lx\n", *(DWORD *)buffer );
+        if (*(DWORD *)buffer & ~WINHTTP_PROTOCOL_MASK)
+        {
+            SetLastError( ERROR_INVALID_PARAMETER );
+            return FALSE;
+        }
+        session->enabled_protocols = *(DWORD *)buffer;
+        TRACE( "enabled_protocols %#lx\n", session->enabled_protocols );
         return TRUE;
 
     case WINHTTP_OPTION_IPV6_FAST_FALLBACK:
@@ -742,6 +748,7 @@ static void request_destroy( struct object_header *hdr )
     TRACE("%p\n", request);
 
     stop_queue( &request->queue );
+    close_connection( request );
     release_object( &request->connect->hdr );
 
     if (request->cred_handle_initialized) FreeCredentialsHandle( &request->cred_handle );
@@ -1073,9 +1080,7 @@ static BOOL request_query_option( struct object_header *hdr, DWORD option, void 
 
     case WINHTTP_OPTION_HTTP_PROTOCOL_USED:
         if (!validate_buffer( buffer, buflen, sizeof(DWORD) )) return FALSE;
-
-        FIXME("WINHTTP_OPTION_HTTP_PROTOCOL_USED\n");
-        *(DWORD *)buffer = 0;
+        *(DWORD *)buffer = request->protocol_used;
         *buflen = sizeof(DWORD);
         return TRUE;
 
@@ -1379,7 +1384,13 @@ static BOOL request_set_option( struct object_header *hdr, DWORD option, void *b
             SetLastError( ERROR_INVALID_PARAMETER );
             return FALSE;
         }
-        FIXME( "WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL %#lx\n", *(DWORD *)buffer );
+        if (*(DWORD *)buffer & ~WINHTTP_PROTOCOL_MASK)
+        {
+            SetLastError( ERROR_INVALID_PARAMETER );
+            return FALSE;
+        }
+        request->enabled_protocols = *(DWORD *)buffer;
+        TRACE( "enabled_protocols %#lx\n", request->enabled_protocols );
         return TRUE;
 
     case WINHTTP_OPTION_WEB_SOCKET_RECEIVE_BUFFER_SIZE:
@@ -1525,6 +1536,7 @@ HINTERNET WINAPI WinHttpOpenRequest( HINTERNET hconnect, const WCHAR *verb, cons
     request->receive_timeout = connect->session->receive_timeout;
     request->receive_response_timeout = connect->session->receive_response_timeout;
     request->max_redirects = 10;
+    request->enabled_protocols = connect->session->enabled_protocols;
     request->websocket_receive_buffer_size = connect->session->websocket_receive_buffer_size;
     request->websocket_send_buffer_size = connect->session->websocket_send_buffer_size;
     request->websocket_set_send_buffer_size = request->websocket_send_buffer_size;

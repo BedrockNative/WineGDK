@@ -31,6 +31,7 @@
 #include "winhttp_private.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(winhttp);
+WINE_DECLARE_DEBUG_CHANNEL(http2);
 
 static int sock_send(int fd, const void *msg, size_t len, WSAOVERLAPPED *ovr)
 {
@@ -72,12 +73,20 @@ BOOL netconn_wait_overlapped_result( struct netconn *conn, WSAOVERLAPPED *ovr, D
 
 static int sock_recv(int fd, void *msg, size_t len, int flags)
 {
-    int ret;
+    int ret, error = 0;
+
     do
     {
-        if ((ret = recv(fd, msg, len, flags)) == -1) WARN( "recv error %d\n", WSAGetLastError() );
+        if ((ret = recv(fd, msg, len, flags)) == -1) error = WSAGetLastError();
     }
-    while(ret == -1 && WSAGetLastError() == WSAEINTR);
+    while (ret == -1 && error == WSAEINTR);
+
+    if (ret == -1)
+    {
+        if (error == WSAEWOULDBLOCK) TRACE( "recv would block\n" );
+        else WARN( "recv error %d\n", error );
+        WSASetLastError( error );
+    }
     return ret;
 }
 
@@ -292,6 +301,12 @@ void netconn_release( struct netconn *conn )
 {
     if (InterlockedDecrement( &conn->refs )) return;
     TRACE( "Closing connection %p.\n", conn );
+    if (conn->http2_session)
+    {
+        http2_destroy_connection( conn );
+        DeleteCriticalSection( &conn->http2_cs );
+    }
+    free( conn->http2_origin );
     if (conn->secure)
     {
         free( conn->peek_msg_mem );
@@ -310,10 +325,14 @@ void netconn_release( struct netconn *conn )
 }
 
 DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD security_flags, CredHandle *cred_handle,
-                              BOOL check_revocation )
+                              BOOL check_revocation, DWORD enabled_protocols )
 {
     SecBuffer out_buf = {0, SECBUFFER_TOKEN, NULL}, in_bufs[2] = {{0, SECBUFFER_TOKEN}, {0, SECBUFFER_EMPTY}};
     SecBufferDesc out_desc = {SECBUFFER_VERSION, 1, &out_buf}, in_desc = {SECBUFFER_VERSION, 2, in_bufs};
+    SecBuffer alpn_buf = {0, SECBUFFER_APPLICATION_PROTOCOLS, NULL};
+    SecBufferDesc alpn_desc = {SECBUFFER_VERSION, 1, &alpn_buf};
+    SecPkgContext_ApplicationProtocol protocol;
+    BYTE alpn_data[32];
     BYTE *read_buf;
     SIZE_T read_buf_size = 2048;
     ULONG attrs = 0;
@@ -328,8 +347,33 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
 
     if (!(read_buf = malloc( read_buf_size ))) return ERROR_OUTOFMEMORY;
 
+    if (enabled_protocols & WINHTTP_PROTOCOL_FLAG_HTTP2)
+    {
+        unsigned int offset = 0, *extension_len;
+        unsigned short *list_len;
+
+        extension_len = (unsigned int *)(alpn_data + offset);
+        offset += sizeof(*extension_len);
+        *(unsigned int *)(alpn_data + offset) = SecApplicationProtocolNegotiationExt_ALPN;
+        offset += sizeof(unsigned int);
+        list_len = (unsigned short *)(alpn_data + offset);
+        offset += sizeof(*list_len);
+        *list_len = 0;
+        alpn_data[offset++] = 2;
+        memcpy( alpn_data + offset, "h2", 2 );
+        offset += 2;
+        alpn_data[offset++] = 8;
+        memcpy( alpn_data + offset, "http/1.1", 8 );
+        offset += 8;
+        *list_len = offset - sizeof(*extension_len) - sizeof(unsigned int) - sizeof(*list_len);
+        *extension_len = *list_len + sizeof(unsigned int) + sizeof(*list_len);
+        alpn_buf.cbBuffer = offset;
+        alpn_buf.pvBuffer = alpn_data;
+    }
+
     memset( &ctx, 0, sizeof(ctx) );
-    status = InitializeSecurityContextW(cred_handle, NULL, hostname, isc_req_flags, 0, 0, NULL, 0,
+    status = InitializeSecurityContextW(cred_handle, NULL, hostname, isc_req_flags, 0, 0,
+            alpn_buf.cbBuffer ? &alpn_desc : NULL, 0,
             &ctx, &out_desc, &attrs, NULL);
 
     assert(status != SEC_E_OK);
@@ -393,7 +437,16 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
 
         if(status == SEC_E_OK) {
             if(in_bufs[1].BufferType == SECBUFFER_EXTRA)
-                FIXME("SECBUFFER_EXTRA not supported\n");
+            {
+                conn->extra_len = in_bufs[1].cbBuffer;
+                if (!(conn->extra_buf = malloc( conn->extra_len )))
+                {
+                    res = ERROR_OUTOFMEMORY;
+                    break;
+                }
+                memcpy( conn->extra_buf, (BYTE *)in_bufs[0].pvBuffer + in_bufs[0].cbBuffer - conn->extra_len,
+                        conn->extra_len );
+            }
 
             status = QueryContextAttributesW(&ctx, SECPKG_ATTR_STREAM_SIZES, &conn->ssl_sizes);
             if(status != SEC_E_OK) {
@@ -435,6 +488,9 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
         conn->ssl_read_buf = NULL;
         free(conn->ssl_write_buf);
         conn->ssl_write_buf = NULL;
+        free(conn->extra_buf);
+        conn->extra_buf = NULL;
+        conn->extra_len = 0;
         DeleteSecurityContext(&ctx);
         return ERROR_WINHTTP_SECURE_CHANNEL_ERROR;
     }
@@ -443,6 +499,16 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
     TRACE("established SSL connection\n");
     conn->secure = TRUE;
     conn->ssl_ctx = ctx;
+    conn->protocol = 0;
+    if ((enabled_protocols & WINHTTP_PROTOCOL_FLAG_HTTP2) &&
+        QueryContextAttributesW( &ctx, SECPKG_ATTR_APPLICATION_PROTOCOL, &protocol ) == SEC_E_OK &&
+        protocol.ProtoNegoStatus == SecApplicationProtocolNegotiationStatus_Success &&
+        protocol.ProtocolIdSize == 2 && !memcmp( protocol.ProtocolId, "h2", 2 ))
+    {
+        conn->protocol = WINHTTP_PROTOCOL_FLAG_HTTP2;
+        TRACE_(http2)( "negotiated HTTP/2 with %s\n", debugstr_w(hostname) );
+    }
+    else TRACE( "negotiated HTTP/1.1 with %s\n", debugstr_w(hostname) );
     return ERROR_SUCCESS;
 }
 

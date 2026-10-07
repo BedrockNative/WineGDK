@@ -1929,6 +1929,9 @@ void release_host( struct hostdata *host )
     if (ref) return;
 
     assert( list_empty( &host->connections ) );
+    assert( list_empty( &host->active_http2 ) );
+    assert( !host->connecting_http2 );
+    free( host->connecting_origin );
     free( host->hostname );
     free( host );
 }
@@ -1995,6 +1998,60 @@ static void cache_connection( struct netconn *netconn )
     LeaveCriticalSection( &connection_pool_cs );
 }
 
+static void activate_http2_connection_locked( struct netconn *conn )
+{
+    assert( !conn->http2_users );
+    conn->http2_users = 1;
+    netconn_addref( conn ); /* active list owns a reference */
+    list_add_head( &conn->host->active_http2, &conn->entry );
+}
+
+static void activate_http2_connection( struct netconn *conn )
+{
+    EnterCriticalSection( &connection_pool_cs );
+    activate_http2_connection_locked( conn );
+    LeaveCriticalSection( &connection_pool_cs );
+}
+
+static void complete_http2_connect( struct hostdata *host, BOOL pioneer, BOOL unavailable )
+{
+    if (!pioneer) return;
+    EnterCriticalSection( &connection_pool_cs );
+    if (unavailable && !wcsicmp( host->hostname, host->connecting_origin )) host->http2_unavailable = TRUE;
+    host->connecting_http2 = FALSE;
+    free( host->connecting_origin );
+    host->connecting_origin = NULL;
+    WakeAllConditionVariable( &host->http2_cv );
+    LeaveCriticalSection( &connection_pool_cs );
+}
+
+static void release_http2_connection( struct request *request, BOOL keep )
+{
+    struct netconn *conn = request->netconn;
+    BOOL last;
+
+    if (!conn) return;
+    http2_abort_request( request );
+    request->netconn = NULL;
+
+    EnterCriticalSection( &connection_pool_cs );
+    assert( conn->http2_users );
+    if (!keep) conn->http2_no_cache = TRUE;
+    last = !--conn->http2_users;
+    if (last) list_remove( &conn->entry );
+    LeaveCriticalSection( &connection_pool_cs );
+
+    if (last)
+    {
+        if (!conn->http2_no_cache && !InterlockedCompareExchange( &conn->http2_error, 0, 0 ) &&
+            !InterlockedCompareExchange( &conn->http2_draining, 0, 0 ) &&
+            netconn_is_valid( conn ))
+            cache_connection( conn );
+        else netconn_release( conn ); /* active list reference */
+    }
+    netconn_release( conn ); /* request reference */
+}
+
 static DWORD map_secure_protocols( DWORD mask )
 {
     DWORD ret = 0;
@@ -2047,16 +2104,20 @@ static DWORD open_connection( struct request *request )
 {
     BOOL is_secure = request->hdr.flags & WINHTTP_FLAG_SECURE;
     struct hostdata *host = NULL, *iter;
-    struct netconn *netconn = NULL;
+    struct netconn *netconn = NULL, *candidate, *next_candidate;
     struct connect *connect;
     WCHAR *addressW = NULL;
     INTERNET_PORT port;
     DWORD ret, len;
+    BOOL shared = FALSE, created = FALSE, pioneer = FALSE, want_http2;
 
+    reset_data_stream( request );
     if (request->netconn) goto done;
 
     connect = request->connect;
     port = connect->serverport ? connect->serverport : (request->hdr.flags & WINHTTP_FLAG_SECURE ? 443 : 80);
+    want_http2 = is_secure && (request->enabled_protocols & WINHTTP_PROTOCOL_FLAG_HTTP2) &&
+                 !(request->flags & REQUEST_FLAG_WEBSOCKET_UPGRADE);
 
     EnterCriticalSection( &connection_pool_cs );
 
@@ -2078,6 +2139,11 @@ static DWORD open_connection( struct request *request )
             host->secure = is_secure;
             host->port = port;
             list_init( &host->connections );
+            list_init( &host->active_http2 );
+            InitializeConditionVariable( &host->http2_cv );
+            host->connecting_origin = NULL;
+            host->connecting_http2 = FALSE;
+            host->http2_unavailable = FALSE;
             if ((host->hostname = wcsdup( connect->servername )))
             {
                 list_add_head( &connection_pool, &host->entry );
@@ -2094,22 +2160,70 @@ static DWORD open_connection( struct request *request )
 
     if (!host) return ERROR_OUTOFMEMORY;
 
-    for (;;)
+retry_pool:
+    EnterCriticalSection( &connection_pool_cs );
+    if (want_http2)
     {
-        EnterCriticalSection( &connection_pool_cs );
-        if (!list_empty( &host->connections ))
+        LIST_FOR_EACH_ENTRY( candidate, &host->active_http2, struct netconn, entry )
         {
-            netconn = LIST_ENTRY( list_head( &host->connections ), struct netconn, entry );
-            list_remove( &netconn->entry );
+            if (InterlockedCompareExchange( &candidate->http2_error, 0, 0 ) ||
+                InterlockedCompareExchange( &candidate->http2_draining, 0, 0 ) || candidate->socket == -1 ||
+                wcsicmp( candidate->http2_origin, connect->hostname )) continue;
+            netconn = candidate;
+            netconn_addref( netconn );
+            netconn->http2_users++;
+            shared = TRUE;
+            break;
         }
-        LeaveCriticalSection( &connection_pool_cs );
-        if (!netconn) break;
-
-        if (netconn_is_alive( netconn )) break;
-        TRACE("connection %p no longer alive, closing\n", netconn);
-        netconn_release( netconn );
-        netconn = NULL;
     }
+    if (!netconn)
+    {
+        LIST_FOR_EACH_ENTRY_SAFE( candidate, next_candidate, &host->connections, struct netconn, entry )
+        {
+            if (candidate->protocol == WINHTTP_PROTOCOL_FLAG_HTTP2 &&
+                (!(request->enabled_protocols & WINHTTP_PROTOCOL_FLAG_HTTP2) ||
+                 (request->flags & REQUEST_FLAG_WEBSOCKET_UPGRADE) ||
+                 InterlockedCompareExchange( &candidate->http2_error, 0, 0 ) ||
+                 InterlockedCompareExchange( &candidate->http2_draining, 0, 0 ) ||
+                 wcsicmp( candidate->http2_origin, connect->hostname ))) continue;
+            list_remove( &candidate->entry );
+            if (!netconn_is_alive( candidate ))
+            {
+                TRACE( "connection %p no longer alive, closing\n", candidate );
+                netconn_release( candidate );
+                continue;
+            }
+            netconn = candidate;
+            if (netconn->protocol == WINHTTP_PROTOCOL_FLAG_HTTP2)
+            {
+                activate_http2_connection_locked( netconn );
+                shared = TRUE;
+            }
+            break;
+        }
+    }
+    if (!netconn && want_http2 && !host->http2_unavailable)
+    {
+        if (host->connecting_http2 && !wcsicmp( host->connecting_origin, connect->hostname ))
+        {
+            DWORD wait = request->connect_timeout > 0 ? request->connect_timeout : 30000;
+            BOOL signaled = SleepConditionVariableCS( &host->http2_cv, &connection_pool_cs, wait );
+            LeaveCriticalSection( &connection_pool_cs );
+            if (!signaled)
+            {
+                release_host( host );
+                return ERROR_WINHTTP_TIMEOUT;
+            }
+            goto retry_pool;
+        }
+        if (!host->connecting_http2 && (host->connecting_origin = wcsdup( connect->hostname )))
+        {
+            host->connecting_http2 = TRUE;
+            pioneer = TRUE;
+        }
+    }
+    LeaveCriticalSection( &connection_pool_cs );
+    if (netconn) request->netconn = netconn;
 
     if (!connect->resolved && netconn)
     {
@@ -2124,6 +2238,8 @@ static DWORD open_connection( struct request *request )
 
         if ((ret = netconn_resolve( host->hostname, port, 0, &connect->sockaddr, request->resolve_timeout )))
         {
+            complete_http2_connect( host, pioneer, FALSE );
+            close_connection( request );
             release_host( host );
             return ret;
         }
@@ -2131,6 +2247,8 @@ static DWORD open_connection( struct request *request )
 
         if (!(addressW = addr_to_str( &connect->sockaddr )))
         {
+            complete_http2_connect( host, pioneer, FALSE );
+            close_connection( request );
             release_host( host );
             return ERROR_OUTOFMEMORY;
         }
@@ -2142,6 +2260,7 @@ static DWORD open_connection( struct request *request )
     {
         if (!addressW && !(addressW = addr_to_str( &connect->sockaddr )))
         {
+            complete_http2_connect( host, pioneer, FALSE );
             release_host( host );
             return ERROR_OUTOFMEMORY;
         }
@@ -2154,9 +2273,11 @@ static DWORD open_connection( struct request *request )
         if ((ret = netconn_create( host, &connect->sockaddr, request->connect_timeout, &netconn )))
         {
             free( addressW );
+            complete_http2_connect( host, pioneer, FALSE );
             release_host( host );
             return ret;
         }
+        created = TRUE;
         netconn_set_timeout( netconn, TRUE, request->send_timeout );
         netconn_set_timeout( netconn, FALSE, get_receive_response_timeout( request ));
 
@@ -2170,6 +2291,7 @@ static DWORD open_connection( struct request *request )
                 {
                     request->netconn = NULL;
                     free( addressW );
+                    complete_http2_connect( host, pioneer, FALSE );
                     netconn_release( netconn );
                     return ret;
                 }
@@ -2180,12 +2302,33 @@ static DWORD open_connection( struct request *request )
 
             if ((ret = ensure_cred_handle( request )) ||
                 (ret = netconn_secure_connect( netconn, connect->hostname, request->security_flags,
-                                               &request->cred_handle, request->check_revocation )))
+                                               &request->cred_handle, request->check_revocation,
+                                               request->flags & REQUEST_FLAG_WEBSOCKET_UPGRADE ? 0 :
+                                               request->enabled_protocols )))
             {
                 request->netconn = NULL;
                 free( addressW );
+                complete_http2_connect( host, pioneer, FALSE );
                 netconn_release( netconn );
                 return ret;
+            }
+            if (netconn->protocol == WINHTTP_PROTOCOL_FLAG_HTTP2 &&
+                (ret = http2_init_connection( netconn )))
+            {
+                request->netconn = NULL;
+                free( addressW );
+                complete_http2_connect( host, pioneer, FALSE );
+                netconn_release( netconn );
+                return ret;
+            }
+            if (netconn->protocol == WINHTTP_PROTOCOL_FLAG_HTTP2 &&
+                !(netconn->http2_origin = wcsdup( connect->hostname )))
+            {
+                request->netconn = NULL;
+                free( addressW );
+                complete_http2_connect( host, pioneer, FALSE );
+                netconn_release( netconn );
+                return ERROR_OUTOFMEMORY;
             }
         }
 
@@ -2195,20 +2338,30 @@ static DWORD open_connection( struct request *request )
     {
         TRACE("using connection %p\n", netconn);
 
-        netconn_set_timeout( netconn, TRUE, request->send_timeout );
-        netconn_set_timeout( netconn, FALSE, get_receive_response_timeout( request ));
+        if (!shared)
+        {
+            netconn_set_timeout( netconn, TRUE, request->send_timeout );
+            netconn_set_timeout( netconn, FALSE, get_receive_response_timeout( request ));
+        }
         request->netconn = netconn;
     }
+
+    if (!shared && netconn->protocol == WINHTTP_PROTOCOL_FLAG_HTTP2) activate_http2_connection( netconn );
 
     if (netconn->secure && !(request->server_cert = netconn_get_certificate( netconn )))
     {
         free( addressW );
-        netconn_release( netconn );
+        complete_http2_connect( host, pioneer, FALSE );
+        if (netconn->protocol == WINHTTP_PROTOCOL_FLAG_HTTP2) release_http2_connection( request, FALSE );
+        else { netconn_release( netconn ); request->netconn = NULL; }
+        if (!created) release_host( host );
         return ERROR_WINHTTP_SECURE_FAILURE;
     }
 
+    complete_http2_connect( host, pioneer, netconn->protocol != WINHTTP_PROTOCOL_FLAG_HTTP2 );
+    if (!created) release_host( host );
+
 done:
-    reset_data_stream( request );
     free( addressW );
     return ERROR_SUCCESS;
 }
@@ -2217,6 +2370,11 @@ void close_connection( struct request *request )
 {
     if (!request->netconn) return;
 
+    if (request->netconn->protocol == WINHTTP_PROTOCOL_FLAG_HTTP2)
+    {
+        release_http2_connection( request, !(request->hdr.disable_flags & WINHTTP_DISABLE_KEEP_ALIVE) );
+        return;
+    }
     netconn_release( request->netconn );
     request->netconn = NULL;
 }
@@ -2263,6 +2421,17 @@ static void finished_reading( struct request *request )
     DWORD size = sizeof(connection);
 
     if (!request->netconn) return;
+
+    if (request->netconn->protocol == WINHTTP_PROTOCOL_FLAG_HTTP2)
+    {
+        unsigned int i;
+        BOOL keep = !(request->hdr.disable_flags & WINHTTP_DISABLE_KEEP_ALIVE);
+        for (i = 0; i < request->num_headers; i++)
+            if (request->headers[i].is_request && !wcsicmp( request->headers[i].field, L"Connection" ) &&
+                !wcsicmp( request->headers[i].value, L"close" )) keep = FALSE;
+        release_http2_connection( request, keep );
+        return;
+    }
 
     if (request->netconn->socket == -1) close = TRUE;
     else if (request->hdr.disable_flags & WINHTTP_DISABLE_KEEP_ALIVE) close = TRUE;
@@ -2366,7 +2535,7 @@ static DWORD str_to_wire( const WCHAR *src, int src_len, char *dst, enum escape_
     return len;
 }
 
-static char *build_wire_path( struct request *request, DWORD *ret_len )
+char *build_wire_path( struct request *request, DWORD *ret_len, BOOL absolute )
 {
     WCHAR *full_path;
     const WCHAR *start, *path, *query = NULL;
@@ -2374,7 +2543,8 @@ static char *build_wire_path( struct request *request, DWORD *ret_len )
     enum escape_flags path_flags, query_flags;
     char *ret;
 
-    if (!wcsicmp( request->connect->hostname, request->connect->servername )) start = full_path = request->path;
+    if (!absolute || !wcsicmp( request->connect->hostname, request->connect->servername ))
+        start = full_path = request->path;
     else if (!(full_path = build_absolute_request_path( request, &start ))) return NULL;
 
     len = lstrlenW( full_path );
@@ -2415,7 +2585,7 @@ static char *build_wire_request( struct request *request, DWORD *len )
     char *path, *ptr, *ret;
     DWORD i, len_path;
 
-    if (!(path = build_wire_path( request, &len_path ))) return NULL;
+    if (!(path = build_wire_path( request, &len_path, TRUE ))) return NULL;
 
     *len = str_to_wire( request->verb, -1, NULL, 0 ) + 1; /* ' ' */
     *len += len_path + 1; /* ' ' */
@@ -2488,6 +2658,7 @@ static DWORD send_request( struct request *request, const WCHAR *headers, DWORD 
     char *wire_req;
     int bytes_sent;
     BOOL chunked;
+    unsigned int http2_retries = 0;
 
     TRACE( "request state %d.\n", request->state );
 
@@ -2567,18 +2738,37 @@ static DWORD send_request( struct request *request, const WCHAR *headers, DWORD 
 
     if (context) request->hdr.context = context;
 
+open_for_send:
     if ((ret = open_connection( request ))) goto end;
+    request->state = REQUEST_STATE_SENDING_REQUEST;
+    request->send_total_len = total_len;
+    request->bytes_written = 0;
+    request->protocol_used = request->netconn->protocol;
+    send_callback( &request->hdr, WINHTTP_CALLBACK_STATUS_SENDING_REQUEST, NULL, 0 );
+
+    if (request->netconn->protocol == WINHTTP_PROTOCOL_FLAG_HTTP2)
+    {
+        ret = http2_send_request( request, optional, optional_len, (DWORD *)&bytes_sent );
+        if (ret == ERROR_WINHTTP_RESEND_REQUEST && !request->http2_stream.id && http2_retries++ < 2)
+        {
+            /* GOAWAY arrived after this connection was selected, but before
+             * any stream was submitted.  A new connection can send it safely. */
+            close_connection( request );
+            goto open_for_send;
+        }
+        if (ret) goto end;
+        request->optional = optional;
+        request->optional_len = optional_len;
+        len = optional_len;
+        goto sent;
+    }
+
     if (!(wire_req = build_wire_request( request, &len )))
     {
         ret = ERROR_OUTOFMEMORY;
         goto end;
     }
     TRACE("full request: %s\n", debugstr_a(wire_req));
-
-    request->state = REQUEST_STATE_SENDING_REQUEST;
-    request->send_total_len = total_len;
-    request->bytes_written = 0;
-    send_callback( &request->hdr, WINHTTP_CALLBACK_STATUS_SENDING_REQUEST, NULL, 0 );
 
     ret = netconn_send( request->netconn, wire_req, len, &bytes_sent, NULL );
     free( wire_req );
@@ -2593,6 +2783,7 @@ static DWORD send_request( struct request *request, const WCHAR *headers, DWORD 
         len += optional_len;
     }
 
+sent:
     request->state = REQUEST_STATE_REQUEST_SENT;
     send_callback( &request->hdr, WINHTTP_CALLBACK_STATUS_REQUEST_SENT, &len, sizeof(len) );
 
@@ -2953,6 +3144,7 @@ static DWORD read_reply( struct request *request )
     WCHAR status_code[4]; /* sizeof("nnn") */
 
     if (!request->netconn) return ERROR_WINHTTP_INCORRECT_HANDLE_STATE;
+    if (request->netconn->protocol == WINHTTP_PROTOCOL_FLAG_HTTP2) return http2_read_reply( request );
 
     do
     {
@@ -3187,8 +3379,7 @@ static DWORD handle_redirect( struct request *request, DWORD status )
                 goto end;
             }
 
-            netconn_release( request->netconn );
-            request->netconn = NULL;
+            close_connection( request );
             request->content_length = request->content_read = 0;
             reset_data_stream( request );
         }
@@ -3276,6 +3467,7 @@ static DWORD receive_response( struct request *request )
 {
     BOOL async = request->connect->hdr.flags & WINHTTP_FLAG_ASYNC;
     DWORD ret, size, query, status;
+    unsigned int http2_retries = 0;
 
     TRACE( "request state %d\n", request->state );
 
@@ -3307,8 +3499,17 @@ static DWORD receive_response( struct request *request )
     request->state = REQUEST_STATE_RECEIVING_RESPONSE;
     send_callback( &request->hdr, WINHTTP_CALLBACK_STATUS_RECEIVING_RESPONSE, NULL, 0 );
 
+read_response:
     netconn_set_timeout( request->netconn, FALSE, get_receive_response_timeout( request ));
     ret = read_reply( request );
+    if (ret == ERROR_WINHTTP_RESEND_REQUEST && !request->bytes_written && !request->optional_len &&
+        http2_retries++ < 2)
+    {
+        /* REFUSED_STREAM and streams beyond GOAWAY's last ID were not
+         * processed by the server.  A bodyless request can be replayed. */
+        close_connection( request );
+        if (!(ret = send_request( request, NULL, 0, NULL, 0, 0, 0, FALSE ))) goto read_response;
+    }
 
     request->state = REQUEST_STATE_RESPONSE_RECEIVED;
     send_callback( &request->hdr, WINHTTP_CALLBACK_STATUS_RESPONSE_RECEIVED, &request->reply_len, sizeof(request->reply_len) );
@@ -3702,9 +3903,13 @@ static DWORD write_data( struct request *request, const void *buffer, DWORD to_w
             to_write = request->send_total_len - request->bytes_written;
     }
 
-    ret = netconn_send( request->netconn, buffer, to_write, &num_bytes, NULL );
-    if (!ret && num_bytes > 0)
-        request->bytes_written += num_bytes;
+    if (request->netconn->protocol == WINHTTP_PROTOCOL_FLAG_HTTP2)
+        ret = http2_write_data( request, buffer, to_write, (DWORD *)&num_bytes );
+    else
+    {
+        ret = netconn_send( request->netconn, buffer, to_write, &num_bytes, NULL );
+        if (!ret && num_bytes > 0) request->bytes_written += num_bytes;
+    }
 
     if (async)
     {

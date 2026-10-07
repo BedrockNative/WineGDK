@@ -1,8 +1,8 @@
 EXTRADEFS = -D_WINHTTP_INTERNAL_
 MODULE    = winhttp.dll
 IMPORTLIB = winhttp
-IMPORTS   = $(ZLIB_PE_LIBS) uuid jsproxy user32 advapi32 ws2_32
-EXTRAINCL = $(ZLIB_PE_CFLAGS)
+IMPORTS   = $(NGHTTP2_PE_LIBS) $(ZLIB_PE_LIBS) uuid jsproxy user32 advapi32 ws2_32
+EXTRAINCL = $(NGHTTP2_PE_CFLAGS) $(ZLIB_PE_CFLAGS)
 DELAYIMPORTS = oleaut32 crypt32 secur32 iphlpapi dhcpcsvc
 
 VER_FILEDESCRIPTION_STR = "Wine HTTP Library"
@@ -11,6 +11,7 @@ VER_PRODUCTVERSION      = 5,1,2600,2180
 SOURCES = \
 	cookie.c \
 	handle.c \
+	http2.c \
 	main.c \
 	net.c \
 	request.c \

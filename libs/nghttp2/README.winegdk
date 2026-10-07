@@ -1,0 +1,7 @@
+This directory contains the nghttp2 C library from upstream tag v1.70.0.
+Source: https://github.com/nghttp2/nghttp2
+License: MIT; see COPYING.
+
+Only the library sources and public headers are included. Wine's build system
+compiles them into a PE static archive and links it into winhttp.dll, so no
+nghttp2 DLL or host shared library is needed at runtime.

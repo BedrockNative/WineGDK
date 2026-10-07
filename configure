@@ -722,6 +722,8 @@ PNG_PE_LIBS
 PNG_PE_CFLAGS
 MUSL_PE_LIBS
 MUSL_PE_CFLAGS
+NGHTTP2_PE_LIBS
+NGHTTP2_PE_CFLAGS
 MPG123_PE_LIBS
 MPG123_PE_CFLAGS
 LDAP_PE_LIBS
@@ -1709,6 +1711,7 @@ enable_lcms2
 enable_ldap
 enable_mfuuid
 enable_mpg123
+enable_nghttp2
 enable_musl
 enable_png
 enable_sqlite3
@@ -1895,6 +1898,8 @@ LDAP_PE_CFLAGS
 LDAP_PE_LIBS
 MPG123_PE_CFLAGS
 MPG123_PE_LIBS
+NGHTTP2_PE_CFLAGS
+NGHTTP2_PE_LIBS
 MUSL_PE_CFLAGS
 MUSL_PE_LIBS
 PNG_PE_CFLAGS
@@ -2748,6 +2753,11 @@ Some influential environment variables:
               version
   MPG123_PE_LIBS
               Linker flags for the PE mpg123, overriding the bundled version
+  NGHTTP2_PE_CFLAGS
+              C compiler flags for the PE nghttp2, overriding the bundled
+              version
+  NGHTTP2_PE_LIBS
+              Linker flags for the PE nghttp2, overriding the bundled version
   MUSL_PE_CFLAGS
               C compiler flags for the PE musl, overriding the bundled version
   MUSL_PE_LIBS
@@ -14669,6 +14679,23 @@ fi
 printf '%s\n' "$as_me:${as_lineno-$LINENO}: mpg123 cflags: $MPG123_PE_CFLAGS" >&5
 printf '%s\n' "$as_me:${as_lineno-$LINENO}: mpg123 libs: $MPG123_PE_LIBS" >&5
 
+if ${NGHTTP2_PE_LIBS:+false} :
+then :
+  NGHTTP2_PE_LIBS=nghttp2
+   if ${NGHTTP2_PE_CFLAGS:+false} :
+then :
+  NGHTTP2_PE_CFLAGS="-I\$(top_srcdir)/libs/nghttp2/includes -DNGHTTP2_STATICLIB"
+else case e in #(
+  e) enable_nghttp2=no ;;
+esac
+fi
+else case e in #(
+  e) enable_nghttp2=no ;;
+esac
+fi
+printf '%s\n' "$as_me:${as_lineno-$LINENO}: nghttp2 cflags: $NGHTTP2_PE_CFLAGS" >&5
+printf '%s\n' "$as_me:${as_lineno-$LINENO}: nghttp2 libs: $NGHTTP2_PE_LIBS" >&5
+
 if ${MUSL_PE_LIBS:+false} :
 then :
   MUSL_PE_LIBS=musl
@@ -23288,6 +23315,7 @@ wine_fn_config_makefile libs/lcms2 enable_lcms2
 wine_fn_config_makefile libs/ldap enable_ldap
 wine_fn_config_makefile libs/mfuuid enable_mfuuid
 wine_fn_config_makefile libs/mpg123 enable_mpg123
+wine_fn_config_makefile libs/nghttp2 enable_nghttp2
 wine_fn_config_makefile libs/musl enable_musl
 wine_fn_config_makefile libs/png enable_png
 wine_fn_config_makefile libs/sqlite3 enable_sqlite3
@@ -23522,7 +23550,7 @@ dlls/wineandroid.drv/wine-debug.apk: dlls/wineandroid.drv/build.gradle ${wine_sr
 	mv dlls/wineandroid.drv/build/outputs/apk/debug/wine-debug.apk \$@"
 
 
-EXTERNAL_SUBDIRS="libs/capstone libs/c++ libs/c++abi libs/faudio libs/ffmpeg libs/fluidsynth libs/gsm libs/icucommon libs/icui18n libs/jpeg libs/jxr libs/lcms2 libs/ldap libs/mpg123 libs/musl libs/png libs/sqlite3 libs/symcrypt libs/tiff libs/unwind libs/vkd3d libs/xml2 libs/xslt libs/zlib libs/compiler-rt"
+EXTERNAL_SUBDIRS="libs/capstone libs/c++ libs/c++abi libs/faudio libs/ffmpeg libs/fluidsynth libs/gsm libs/icucommon libs/icui18n libs/jpeg libs/jxr libs/lcms2 libs/ldap libs/mpg123 libs/nghttp2 libs/musl libs/png libs/sqlite3 libs/symcrypt libs/tiff libs/unwind libs/vkd3d libs/xml2 libs/xslt libs/zlib libs/compiler-rt"
 
 TAGSFLAGS="--langmap='c:+.idl.l.rh,make:(Make*.in)'"
 
@@ -24393,6 +24421,8 @@ LDAP_PE_CFLAGS = $LDAP_PE_CFLAGS
 LDAP_PE_LIBS = $LDAP_PE_LIBS
 MPG123_PE_CFLAGS = $MPG123_PE_CFLAGS
 MPG123_PE_LIBS = $MPG123_PE_LIBS
+NGHTTP2_PE_CFLAGS = $NGHTTP2_PE_CFLAGS
+NGHTTP2_PE_LIBS = $NGHTTP2_PE_LIBS
 MUSL_PE_CFLAGS = $MUSL_PE_CFLAGS
 MUSL_PE_LIBS = $MUSL_PE_LIBS
 PNG_PE_CFLAGS = $PNG_PE_CFLAGS

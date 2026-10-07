@@ -61,6 +61,11 @@ struct hostdata
     INTERNET_PORT port;
     BOOL secure;
     struct list connections;
+    struct list active_http2;
+    CONDITION_VARIABLE http2_cv;
+    WCHAR *connecting_origin;
+    BOOL connecting_http2;
+    BOOL http2_unavailable;
 };
 
 struct session
@@ -81,6 +86,7 @@ struct session
     struct list cookie_cache;
     HANDLE unload_event;
     DWORD secure_protocols;
+    DWORD enabled_protocols;
     DWORD passport_flags;
     unsigned int websocket_receive_buffer_size;
     unsigned int websocket_send_buffer_size;
@@ -119,6 +125,16 @@ struct netconn
     char *peek_msg_mem;
     size_t peek_len;
     HANDLE port;
+    DWORD protocol;
+    void *http2_session;
+    WCHAR *http2_origin;
+    unsigned int http2_users;
+    BOOL http2_no_cache;
+    CRITICAL_SECTION http2_cs;
+    CONDITION_VARIABLE http2_cv;
+    BOOL http2_reading;
+    volatile LONG http2_error;
+    volatile LONG http2_draining;
 };
 
 struct header
@@ -213,6 +229,24 @@ struct netconn_stream
     struct data_stream data_stream;
 };
 
+struct http2_stream
+{
+    struct data_stream data_stream;
+    INT32 id;
+    BOOL headers_received;
+    BOOL informational;
+    BOOL final_status_seen;
+    BOOL closed;
+    BOOL upload_complete;
+    BOOL has_upload;
+    DWORD error;
+    BYTE *body;
+    size_t body_pos, body_size, body_capacity;
+    BYTE *upload;
+    size_t upload_pos, upload_size, upload_capacity;
+    size_t header_bytes;
+};
+
 extern const struct data_stream_vtbl netconn_stream_vtbl;
 
 struct request
@@ -241,6 +275,8 @@ struct request
     int receive_timeout;
     int receive_response_timeout;
     DWORD max_redirects;
+    DWORD enabled_protocols;
+    DWORD protocol_used;
     DWORD redirect_count; /* total number of redirects during this request */
     WCHAR *status_text;
     UINT64 content_length; /* total number of bytes to be read */
@@ -248,6 +284,7 @@ struct request
     struct read_buffer read;
     struct data_stream *data_stream;
     struct netconn_stream netconn_stream;
+    struct http2_stream http2_stream;
     struct header *headers;
     DWORD num_headers;
     struct authinfo *authinfo;
@@ -440,7 +477,7 @@ DWORD netconn_create( struct hostdata *, const struct sockaddr_storage *, int, s
 void netconn_unload( void );
 DWORD netconn_recv( struct netconn *, void *, size_t, int, int * );
 DWORD netconn_resolve( const WCHAR *, INTERNET_PORT, DWORD, struct sockaddr_storage *, int );
-DWORD netconn_secure_connect( struct netconn *, WCHAR *, DWORD, CredHandle *, BOOL );
+DWORD netconn_secure_connect( struct netconn *, WCHAR *, DWORD, CredHandle *, BOOL, DWORD );
 DWORD netconn_send( struct netconn *, const void *, size_t, int *, WSAOVERLAPPED * );
 BOOL netconn_wait_overlapped_result( struct netconn *conn, WSAOVERLAPPED *ovr, DWORD *len );
 void netconn_cancel_io( struct netconn *conn );
@@ -449,6 +486,14 @@ BOOL netconn_is_alive( struct netconn * );
 BOOL netconn_is_valid( struct netconn * );
 const void *netconn_get_certificate( struct netconn * );
 int netconn_get_cipher_strength( struct netconn * );
+
+DWORD http2_init_connection( struct netconn * );
+void http2_destroy_connection( struct netconn * );
+DWORD http2_send_request( struct request *, const void *, DWORD, DWORD * );
+DWORD http2_read_reply( struct request * );
+DWORD http2_write_data( struct request *, const void *, DWORD, DWORD * );
+void http2_abort_request( struct request * );
+char *build_wire_path( struct request *, DWORD *, BOOL );
 
 BOOL set_cookies( struct request *, const WCHAR * );
 DWORD add_cookie_headers( struct request * );
