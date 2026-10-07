@@ -73,11 +73,18 @@ make install
 The native packages in `dlls/xgameruntime.threading`, `dlls/dxvk`,
 `dlls/dxvk-nvapi`, and `dlls/vkd3d-proton` are installed by `make install` into
 `lib/wine/native/<architecture>-windows`. New prefixes receive the x64 DLLs
-in `system32` and the i386 graphics DLLs in `syswow64`. XThreading is x64 only.
+in `system32` and the i386 graphics DLLs in `syswow64`. The bundled native
+XThreading companion is x64 only.
 DXVK supplies Direct3D 8–11 and DXGI; VKD3D-Proton supplies Direct3D 12 and
 includes the Minecraft patch from the local patched build. Each package has
 a checksum manifest; the graphics packages also retain their upstream README
 and license files, installed under `share/wine/native`.
+
+WineGDK uses its built-in XThreading implementation by default on both
+architectures. It handles GDK async operations, task queues, timers, and
+completion callbacks. Set `WINEGDK_BUILTIN_XTHREADING=0` to use the bundled
+native XThreading companion for comparison; `1` or an unset variable uses
+the built-in implementation.
 
 DXVK-NVAPI 0.9.2 supplies `nvapi64.dll` and `nvofapi64.dll` for x64 and
 `nvapi.dll` for i386. It follows the same prefix installation and override

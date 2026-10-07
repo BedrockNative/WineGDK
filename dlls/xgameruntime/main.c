@@ -28,6 +28,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(xgameruntime);
 
 static HMODULE xgameruntime;
 static HMODULE xgameruntime_threading;
+static BOOL builtin_threading;
 
 unixlib_handle_t unixhandle;
 
@@ -114,8 +115,12 @@ BOOL WINAPI DllMain( HINSTANCE hinst, DWORD reason, void *reserved )
     {
         case DLL_PROCESS_ATTACH:
         {
+            char option[2];
+
             DisableThreadLibraryCalls(hinst);
-            xgameruntime_threading = LoadLibraryA("xgameruntime.dll.threading");
+            builtin_threading = !(GetEnvironmentVariableA("WINEGDK_BUILTIN_XTHREADING", option,
+                                                         sizeof(option)) == 1 && option[0] == '0');
+            if (!builtin_threading) xgameruntime_threading = LoadLibraryA("xgameruntime.dll.threading");
             break;
         }
         case DLL_PROCESS_DETACH:
@@ -161,7 +166,7 @@ typedef HRESULT (WINAPI *QueryApiImpl_ext)( const GUID *runtimeClassId, REFIID i
 
 HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, void **out )
 {
-    QueryApiImpl_ext func = (QueryApiImpl_ext)GetProcAddress( xgameruntime_threading, "QueryApiImpl" );
+    QueryApiImpl_ext func;
     DWORD asked;
 
     TRACE( "runtimeClassId %s, interfaceId %s, out %p\n",
@@ -185,6 +190,10 @@ HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, voi
         return IXNetworkingImpl_QueryInterface( x_networking, interfaceId, out );
     if (IsEqualGUID( runtimeClassId, &CLSID_XThreadingImpl ))
     {
+        if (builtin_threading) return IXThreadingImpl_QueryInterface( x_threading_impl, interfaceId, out );
+
+        func = xgameruntime_threading ?
+            (QueryApiImpl_ext)GetProcAddress( xgameruntime_threading, "QueryApiImpl" ) : NULL;
         if (func) return func( runtimeClassId, interfaceId, out );
 
         LoadOtherRuntime( &asked );

@@ -109,8 +109,7 @@ public:
         return ::XAsyncBegin( asyncBlock, context, identity, identityName, provider );
     }
 
-    //  NOTE: Padding function here is most likely XAsyncBeginAlloc from libHttpClient. More testing needs to be conducted.
-    // Since this is a private/undocumented function, implementation is not necessary.
+    /* This reserved slot also returns E_NOTIMPL in the native runtime. */
     HRESULT WINAPI __PADDING__() override
     {
         WARN("padding function called!\n");
@@ -233,12 +232,9 @@ public:
         return S_OK;
     }
 
-    //  NOTE: Padding function here is most likely XTaskQueueUninitialize from libHttpClient. More testing needs to be conducted.
-    // Since this is a private/undocumented function, implementation is not necessary.
-    HRESULT WINAPI __PADDING_2__() override
+    HRESULT WINAPI XThreadVerifyNotTimeSensitive() override
     {
-        WARN("padding function called!\n");
-        return E_NOTIMPL;
+        return XThreadIsTimeSensitive() ? HRESULT_FROM_WIN32(ERROR_TIME_SENSITIVE_THREAD) : S_OK;
     }
 
     void WINAPI XThreadAssertNotTimeSensitive() override

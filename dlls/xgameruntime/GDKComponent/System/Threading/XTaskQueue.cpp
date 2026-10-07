@@ -23,13 +23,15 @@ WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
 
 inline ITaskQueue* GetQueue(XTaskQueueHandle handle)
 {
+    if (!handle || handle == reinterpret_cast<XTaskQueueHandle>(-1)) return nullptr;
+
     if (handle->m_signature != TASK_QUEUE_SIGNATURE)
     {
-        assert("Invalid XTaskQueueHandle");
         return nullptr;
     }
 
     ITaskQueue* queue = handle->m_queue;
+    if (!queue) return nullptr;
 
     if (handle != queue->GetHandle())
     {
@@ -1873,6 +1875,7 @@ HRESULT XTaskQueueTerminate(
     XTaskQueueTerminatedCallback* callback
 ) {
     referenced_ptr<ITaskQueue> aq(GetQueue(queue));
+    RETURN_HR_IF(E_GAMERUNTIME_INVALID_HANDLE, aq == nullptr);
     return aq->Terminate(wait, callbackContext, callback);
 }
 

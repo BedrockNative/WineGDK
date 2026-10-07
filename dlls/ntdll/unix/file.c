@@ -2473,8 +2473,19 @@ static NTSTATUS get_dir_data_entry( struct dir_data *dir_data, void *info_ptr, I
     union file_directory_info *info;
     struct stat st;
     ULONG name_len, start, dir_size, attributes, reparse_tag;
+    int ret;
 
-    if (get_file_info( names->unix_name, &st, &attributes, &reparse_tag ) == -1)
+    if (class == FileNamesInformation)
+    {
+        /* Name-only queries still check existence and ignored inodes, but do
+         * not need DOS attributes or reparse tags. */
+        ret = lstat( names->unix_name, &st );
+        if (!ret && S_ISLNK( st.st_mode )) ret = stat( names->unix_name, &st );
+    }
+    else
+        ret = get_file_info( names->unix_name, &st, &attributes, &reparse_tag );
+
+    if (ret == -1)
     {
         TRACE( "file no longer exists %s\n", debugstr_a(names->unix_name) );
         return STATUS_SUCCESS;
@@ -3632,6 +3643,32 @@ static NTSTATUS lookup_unix_name( int root_fd, OBJECT_ATTRIBUTES *attr, UNICODE_
             if (disposition == FILE_CREATE) return STATUS_OBJECT_NAME_COLLISION;
             return STATUS_SUCCESS;
         }
+
+        /* A missing final component does not require resolving all its parents
+         * again if their spelling already matches. Keep the final component on
+         * the normal lookup path for case folding, short names and reparse points. */
+        if (!is_unix && name_len)
+        {
+            const WCHAR *last = name + name_len;
+
+            if (last[-1] == '\\') last--;
+            while (last > name && last[-1] != '\\') last--;
+            if (last > name)
+            {
+                p = unix_name + pos + ret;
+                if (*p == '/') p--;
+                while (p > unix_name + pos && *p != '/') p--;
+                *p = 0;
+                if (!fstatat( root_fd, unix_name, &st, 0 ) && S_ISDIR( st.st_mode ))
+                {
+                    pos = p - unix_name;
+                    nt_pos += last - name;
+                    name_len -= last - name;
+                    name = last;
+                }
+                *p = '/';
+            }
+        }
     }
 
     if (!name_len)  /* empty name -> drive root doesn't exist */
@@ -4714,7 +4751,11 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
         status = open_unix_file( handle, unix_name, access, &new_attr, attributes,
                                  sharing, disposition, options, ea_buffer, ea_length );
     }
-    else WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), status );
+    else if (status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND ||
+             status == STATUS_NO_SUCH_FILE)
+        TRACE( "%s not found (%x)\n", debugstr_us(attr->ObjectName), status );
+    else
+        WARN( "%s query failed (%x)\n", debugstr_us(attr->ObjectName), status );
 
     if (status == STATUS_SUCCESS)
     {

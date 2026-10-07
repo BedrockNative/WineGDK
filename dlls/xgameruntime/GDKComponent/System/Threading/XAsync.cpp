@@ -405,10 +405,7 @@ static HRESULT AllocState(XAsyncBlock* asyncBlock, size_t contextSize)
         RETURN_HR(E_INVALIDARG);
     }
 
-    for (auto i = 0u; i < sizeof(asyncBlock->internal); ++i)
-    {
-        asyncBlock->internal[i] = 0;
-    }
+    memset(asyncBlock->internal, 0, sizeof(asyncBlock->internal));
 
     internal = new (asyncBlock->internal) AsyncBlockInternal{};
 
@@ -806,8 +803,6 @@ HRESULT WINAPI XAsyncSchedule(
         WorkerCallback));
 
     state.Detach();
-
-    TRACE("Before completion, queue here was %p\n", state->queue);
 
     return S_OK;
 }

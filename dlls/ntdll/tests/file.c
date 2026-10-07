@@ -7413,6 +7413,100 @@ static void test_file_map_large_size(void)
     DeleteFileA(source);
 }
 
+static void test_file_path_lookup(void)
+{
+    static const WCHAR *components[] = {L"\\Lookup", L"\\Nested", L"\\\x00e9tage", L"\\Assets"};
+    WCHAR path[MAX_PATH], root_path[MAX_PATH], file[MAX_PATH];
+    unsigned int ends[ARRAY_SIZE(components)], root_len, i;
+    HANDLE handle, root;
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    IO_STATUS_BLOCK io;
+    NTSTATUS status;
+    BOOL ret;
+
+    GetTempPathW( ARRAY_SIZE(path), path );
+    GetTempFileNameW( path, L"ntf", 0, root_path );
+    DeleteFileW( root_path );
+    ret = CreateDirectoryW( root_path, NULL );
+    ok( ret, "CreateDirectory failed, error %lu.\n", GetLastError() );
+    if (!ret) return;
+    root_len = lstrlenW( root_path );
+    lstrcpyW( path, root_path );
+    for (i = 0; i < ARRAY_SIZE(components); ++i)
+    {
+        lstrcatW( path, components[i] );
+        ends[i] = lstrlenW( path );
+        ret = CreateDirectoryW( path, NULL );
+        ok( ret, "CreateDirectory %s failed, error %lu.\n", wine_dbgstr_w(path), GetLastError() );
+    }
+    lstrcpyW( file, path );
+    lstrcatW( file, L"\\Leaf.bin" );
+    handle = CreateFileW( file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL );
+    ok( handle == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND,
+            "Missing final component returned %p, error %lu.\n", handle, GetLastError() );
+    if (handle != INVALID_HANDLE_VALUE) CloseHandle( handle );
+    handle = CreateFileW( file, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_NEW, 0, NULL );
+    ok( handle != INVALID_HANDLE_VALUE, "Create after miss failed, error %lu.\n", GetLastError() );
+    if (handle != INVALID_HANDLE_VALUE) CloseHandle( handle );
+    lstrcpyW( file + ends[3], L"\\LEAF.BIN" );
+    handle = CreateFileW( file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL );
+    ok( handle != INVALID_HANDLE_VALUE, "Case-insensitive leaf failed, error %lu.\n", GetLastError() );
+    if (handle != INVALID_HANDLE_VALUE) CloseHandle( handle );
+    handle = CreateFileW( file, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_NEW, 0, NULL );
+    ok( handle == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_EXISTS,
+            "Create collision returned %p, error %lu.\n", handle, GetLastError() );
+    if (handle != INVALID_HANDLE_VALUE) CloseHandle( handle );
+    CharUpperBuffW( file + root_len + 1, lstrlenW(file) - root_len - 1 );
+    handle = CreateFileW( file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL );
+    ok( handle != INVALID_HANDLE_VALUE, "Case-insensitive parents failed, error %lu.\n", GetLastError() );
+    if (handle != INVALID_HANDLE_VALUE) CloseHandle( handle );
+
+    root = CreateFileW( root_path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL );
+    ok( root != INVALID_HANDLE_VALUE, "Open root failed, error %lu.\n", GetLastError() );
+    if (root != INVALID_HANDLE_VALUE)
+    {
+        pRtlInitUnicodeString( &name, L"Lookup\\Nested\\\x00e9tage\\Assets\\leaf.bin" );
+        InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, root, NULL );
+        status = pNtOpenFile( &handle, GENERIC_READ | SYNCHRONIZE, &attr, &io, FILE_SHARE_READ,
+                FILE_SYNCHRONOUS_IO_NONALERT );
+        ok( !status, "Root-relative leaf lookup returned %#lx.\n", status );
+        if (!status) CloseHandle( handle );
+        pRtlInitUnicodeString( &name, L"Lookup\\Nested\\\x00e9tage\\Assets\\absent.bin" );
+        status = pNtOpenFile( &handle, GENERIC_READ | SYNCHRONIZE, &attr, &io, FILE_SHARE_READ,
+                FILE_SYNCHRONOUS_IO_NONALERT );
+        ok( status == STATUS_OBJECT_NAME_NOT_FOUND, "Missing relative leaf returned %#lx.\n", status );
+        if (!status) CloseHandle( handle );
+        CloseHandle( root );
+    }
+    DeleteFileW( file );
+    lstrcpyW( file, path );
+    lstrcatW( file, L"\\missing\\leaf.bin" );
+    handle = CreateFileW( file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL );
+    ok( handle == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PATH_NOT_FOUND,
+            "Missing intermediate directory returned %p, error %lu.\n", handle, GetLastError() );
+    if (handle != INVALID_HANDLE_VALUE) CloseHandle( handle );
+    lstrcpyW( file, path );
+    lstrcatW( file, L"\\Subdir" );
+    ret = CreateDirectoryW( file, NULL );
+    ok( ret, "Create child directory failed, error %lu.\n", GetLastError() );
+    lstrcatW( file, L"\\" );
+    handle = CreateFileW( file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS, NULL );
+    ok( handle != INVALID_HANDLE_VALUE, "Trailing slash failed, error %lu.\n", GetLastError() );
+    if (handle != INVALID_HANDLE_VALUE) CloseHandle( handle );
+    file[lstrlenW(file) - 1] = 0;
+    RemoveDirectoryW( file );
+    for (i = ARRAY_SIZE(components); i; --i)
+    {
+        path[ends[i - 1]] = 0;
+        ret = RemoveDirectoryW( path );
+        ok( ret, "RemoveDirectory %s failed, error %lu.\n", wine_dbgstr_w(path), GetLastError() );
+    }
+    RemoveDirectoryW( root_path );
+}
+
 START_TEST(file)
 {
     HMODULE hkernel32 = GetModuleHandleA("kernel32.dll");
@@ -7454,6 +7548,7 @@ START_TEST(file)
     pNtFlushBuffersFile = (void *)GetProcAddress(hntdll, "NtFlushBuffersFile");
     pNtQueryEaFile          = (void *)GetProcAddress(hntdll, "NtQueryEaFile");
 
+    test_file_path_lookup();
     test_read_write();
     test_NtCreateFile();
     create_file_test();
