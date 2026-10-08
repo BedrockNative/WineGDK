@@ -29,6 +29,7 @@ HRESULT http_request( const WCHAR *method, const WCHAR *hostName, const WCHAR *p
     HINTERNET connection = NULL, request = NULL, session = NULL;
     DWORD size = sizeof( DWORD ), status;
     UCHAR *new_buffer;
+    SIZE_T capacity = 0, needed, new_capacity;
     HRESULT hr = S_OK;
 
     if (!buffer || !bufferSize) return E_POINTER;
@@ -63,13 +64,22 @@ HRESULT http_request( const WCHAR *method, const WCHAR *hostName, const WCHAR *p
             hr = E_OUTOFMEMORY;
             goto cleanup;
         }
-        if (!(new_buffer = realloc( *buffer, *bufferSize + size )))
+        needed = *bufferSize + size;
+        if (needed > capacity)
         {
-            hr = E_OUTOFMEMORY;
-            goto cleanup;
+            /* Avoid reallocating and copying the response for every fragment. */
+            new_capacity = capacity ? capacity : 4096;
+            if (new_capacity < needed)
+                new_capacity = max( needed, new_capacity <= ~(SIZE_T)0 / 2 ? new_capacity * 2 : needed );
+            if (!(new_buffer = realloc( *buffer, new_capacity )))
+            {
+                hr = E_OUTOFMEMORY;
+                goto cleanup;
+            }
+            *buffer = new_buffer;
+            capacity = new_capacity;
         }
 
-        *buffer = new_buffer;
         if (!WinHttpReadData( request, *buffer + *bufferSize, size, &size )) goto error;
         *bufferSize += size;
     }

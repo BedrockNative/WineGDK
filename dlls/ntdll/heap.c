@@ -1108,16 +1108,29 @@ static SUBHEAP *create_subheap( struct heap *heap, DWORD flags, SIZE_T total_siz
 
 static struct block *find_free_block( struct heap *heap, ULONG flags, SIZE_T block_size )
 {
-    struct list *ptr = &find_free_list( heap, block_size, FALSE )->entry;
+    unsigned int index = get_free_list_index( block_size );
+    struct list *ptr = &heap->free_lists[index].entry, *deferred = NULL, *stop = NULL;
+    unsigned int misses = 0;
     struct entry *entry;
     struct block *block;
     SIZE_T total_size;
     SUBHEAP *subheap;
 
-    /* Find a suitable free list, and in it find a block large enough */
-
-    while ((ptr = list_next( &heap->free_lists[0].entry, ptr )))
+    /* The first size class may contain arbitrarily many undersized blocks.
+     * After a bounded search, prefer a block from a larger class. If there
+     * are none, finish searching the original class before growing the heap
+     * or failing a fixed-size heap allocation. */
+    for (;;)
     {
+        if (!(ptr = list_next( &heap->free_lists[0].entry, ptr )))
+        {
+            if (!deferred) break;
+            ptr = deferred;
+            deferred = NULL;
+            stop = &heap->free_lists[index + 1].entry;
+            continue;
+        }
+        if (ptr == stop) break;
         entry = LIST_ENTRY( ptr, struct entry, entry );
         block = &entry->block;
         if (block_get_flags( block ) == BLOCK_FLAG_FREE_LINK) continue;
@@ -1126,6 +1139,11 @@ static struct block *find_free_block( struct heap *heap, ULONG flags, SIZE_T blo
             if (!subheap_commit( heap, block_get_subheap( heap, block ), block, block_size )) return NULL;
             list_remove( &entry->entry );
             return block;
+        }
+        if (!stop && !deferred && ++misses == 32 && index + 1 < FREE_LIST_COUNT)
+        {
+            deferred = ptr;
+            ptr = &heap->free_lists[index + 1].entry;
         }
     }
 

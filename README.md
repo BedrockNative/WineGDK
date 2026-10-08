@@ -3,7 +3,7 @@
 Microsoft Services is WIP.
 
 New fork releases use `11.18-<number>-winrt`, reflecting support for both GDK
-and UWP/Windows Runtime. The current release is `11.18-10-winrt`; existing
+and UWP/Windows Runtime. The current release is `11.18-11-winrt`; existing
 `*-gdkcomponents` tags keep their original names.
 
 Set `XODUS_SOCK_NAME` to override the default `xodus.sock` filename under
