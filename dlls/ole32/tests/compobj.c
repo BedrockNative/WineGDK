@@ -2166,19 +2166,8 @@ static void test_CoGetObjectContext(void)
     callback_arg.logical_thread_id = id2;
     callback_arg.todo_thread_id = FALSE;
 
-    SET_EXPECT(context_callback_func);
-    hr = IContextCallback_ContextCallback(pContextCallback, context_callback_func,
-            (ComCallData *)&callback_arg, &IID_IContextCallback, 2, NULL);
-    CHECK_CALLED(context_callback_func, 1);
-    ok(hr == S_FALSE, "got 0x%08lx\n", hr);
-
-    SET_EXPECT(context_callback_func);
-    callback_arg.logical_thread_id = IID_IEnterActivityWithNoLock;
-    hr = IContextCallback_ContextCallback(pContextCallback, context_callback_func,
-            (ComCallData *)&callback_arg, &IID_IEnterActivityWithNoLock, 2, NULL);
-    CHECK_CALLED(context_callback_func, 1);
-    ok(hr == S_FALSE, "got 0x%08lx\n", hr);
-
+    /* The first callback must work across apartments, without a previous
+     * local ContextCallback priming the origin apartment's RPC endpoint. */
     thread = CreateThread(NULL, 0, context_callback_thread, &callback_arg, 0, NULL);
     ok(thread != NULL, "CreateThread failed\n");
     while (1)
@@ -2201,6 +2190,20 @@ static void test_CoGetObjectContext(void)
         break;
     }
     CloseHandle(thread);
+
+    callback_arg.logical_thread_id = id2;
+    SET_EXPECT(context_callback_func);
+    hr = IContextCallback_ContextCallback(pContextCallback, context_callback_func,
+            (ComCallData *)&callback_arg, &IID_IContextCallback, 2, NULL);
+    CHECK_CALLED(context_callback_func, 1);
+    ok(hr == S_FALSE, "got 0x%08lx\n", hr);
+
+    SET_EXPECT(context_callback_func);
+    callback_arg.logical_thread_id = IID_IEnterActivityWithNoLock;
+    hr = IContextCallback_ContextCallback(pContextCallback, context_callback_func,
+            (ComCallData *)&callback_arg, &IID_IEnterActivityWithNoLock, 2, NULL);
+    CHECK_CALLED(context_callback_func, 1);
+    ok(hr == S_FALSE, "got 0x%08lx\n", hr);
 
     refs = IContextCallback_Release(pContextCallback);
     ok(refs == 0, "pContextCallback should have 0 refs instead of %ld refs\n", refs);

@@ -2871,6 +2871,11 @@ HRESULT WINAPI CoGetContextToken(ULONG_PTR *token)
         }
 
         tlsdata->context_token = &context->IObjContext_iface;
+
+        /* ContextCallback can first be invoked from another apartment. Export
+         * this apartment's IRundown while still on its owning thread, rather
+         * than relying on a previous local callback to start remoting. */
+        rpc_start_remoting(apt);
     }
 
     *token = (ULONG_PTR)tlsdata->context_token;
