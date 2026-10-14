@@ -629,7 +629,9 @@ void WINAPI RtlReleaseSRWLockShared( RTL_SRWLOCK *lock )
         --new.s.owners;
     } while (InterlockedCompareExchange( u.l, new.l, old.l ) != old.l);
 
-    if (!new.s.owners)
+    /* An exclusive acquirer registers itself before checking owners. If it
+     * arrives after this update, it will observe the unlocked state. */
+    if (!new.s.owners && new.s.exclusive_waiters)
         RtlWakeAddressSingle( &u.s->owners );
 }
 
