@@ -46,6 +46,7 @@
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(event);
+WINE_DECLARE_DEBUG_CHANNEL(cursor);
 WINE_DECLARE_DEBUG_CHANNEL(xdnd);
 
 #define DndNotDnd       -1    /* OffiX drag&drop */
@@ -701,7 +702,7 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
         return FALSE;
     }
 
-    TRACE( "window %p/%lx FocusIn serial %lu, detail %s, mode %s, foreground %p\n", hwnd, event->window,
+    TRACE_(cursor)( "window %p/%lx FocusIn serial %lu, detail %s, mode %s, foreground %p\n", hwnd, event->window,
            event->serial, focus_details[event->detail], focus_modes[event->mode], foreground );
 
     /* when focusing in the virtual desktop window, re-apply the cursor clipping rect */
@@ -802,7 +803,7 @@ static BOOL X11DRV_FocusOut( HWND hwnd, XEvent *xev )
         return FALSE;
     }
 
-    TRACE( "window %p/%lx FocusOut serial %lu, detail %s, mode %s, foreground %p\n", hwnd, event->window,
+    TRACE_(cursor)( "window %p/%lx FocusOut serial %lu, detail %s, mode %s, foreground %p\n", hwnd, event->window,
            event->serial, focus_details[event->detail], focus_modes[event->mode], foreground );
 
     /* in virtual desktop mode or when keyboard is grabbed, release any cursor grab but keep the clipping rect */

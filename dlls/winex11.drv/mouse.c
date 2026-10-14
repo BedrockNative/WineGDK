@@ -372,11 +372,16 @@ static BOOL grab_clipping_window( const RECT *clip )
     Window clip_window;
     HCURSOR cursor;
     POINT pos;
+    int grab_result;
 
     /* don't clip in the desktop process */
     if (NtUserGetWindowThread( NtUserGetDesktopWindow(), NULL ) == GetCurrentThreadId()) return TRUE;
     /* don't clip the cursor if the X input focus is on another process window */
-    if (!is_current_process_focused()) return TRUE;
+    if (!is_current_process_focused())
+    {
+        TRACE( "Skipping clip %s: X input focus is outside this process\n", wine_dbgstr_rect(clip) );
+        return TRUE;
+    }
 
     if (!data) return FALSE;
     if (!(clip_window = init_clip_window())) return TRUE;
@@ -406,9 +411,12 @@ static BOOL grab_clipping_window( const RECT *clip )
         clip->right < clip_rect.right || clip->bottom < clip_rect.bottom)
         data->warp_serial = NextRequest( data->display );
 
-    if (!XGrabPointer( data->display, clip_window, False,
+    grab_result = XGrabPointer( data->display, clip_window, False,
                        PointerMotionMask | ButtonPressMask | ButtonReleaseMask,
-                       GrabModeAsync, GrabModeAsync, clip_window, None, CurrentTime ))
+                       GrabModeAsync, GrabModeAsync, clip_window, None, CurrentTime );
+    TRACE( "XGrabPointer result %d, thread clipping %u, process clipping %u\n",
+           grab_result, data->clipping_cursor, clipping_cursor );
+    if (grab_result == GrabSuccess)
         clipping_cursor = TRUE;
 
     SERVER_START_REQ( set_cursor )

@@ -38,6 +38,7 @@
 #include "kbd.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(win);
+WINE_DECLARE_DEBUG_CHANNEL(cursor);
 WINE_DECLARE_DEBUG_CHANNEL(keyboard);
 
 #define HIMETRIC_PER_INCH 2540
@@ -2808,7 +2809,7 @@ BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
         if (is_virtual_desktop()) return FALSE;
     }
 
-    TRACE( "win %p clipping fullscreen\n", hwnd );
+    TRACE_(cursor)( "win %p automatic fullscreen clip %s\n", hwnd, wine_dbgstr_rect(&monitor_rect) );
 
     SERVER_START_REQ( set_cursor )
     {
@@ -2842,7 +2843,7 @@ BOOL process_wine_clipcursor( HWND hwnd, UINT flags, BOOL reset )
     RECT rect, virtual_rect = get_virtual_screen_rect( no_dpi, MDT_RAW_DPI );
     BOOL empty = !!(flags & SET_CURSOR_NOCLIP);
 
-    TRACE( "hwnd %p, flags %#x, reset %u\n", hwnd, flags, reset );
+    TRACE_(cursor)( "hwnd %p, flags %#x, reset %u\n", hwnd, flags, reset );
 
     if (thread_info->clipping_cursor) InterlockedDecrement( &clipping_cursor );
     thread_info->clipping_cursor = FALSE;
@@ -2889,7 +2890,7 @@ BOOL WINAPI NtUserClipCursor( const RECT *rect )
     RECT new_rect;
     BOOL ret;
 
-    TRACE( "Clipping to %s\n", wine_dbgstr_rect(rect) );
+    TRACE_(cursor)( "application clip %s, foreground %p\n", wine_dbgstr_rect(rect), NtUserGetForegroundWindow() );
 
     if (rect)
     {
