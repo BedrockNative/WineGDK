@@ -685,13 +685,26 @@ static NTSTATUS send_mouse_motion( UINT flags )
     return status;
 }
 
+static BOOL input_no_batch;
+
+static void init_input_batching(void)
+{
+    const char *value = getenv( "WINE_INPUT_NOBATCH" );
+
+    /* Prefer immediate delivery; allow opting back into motion batching. */
+    input_no_batch = !value || strcmp( value, "0" );
+}
+
 static NTSTATUS accum_mouse_motion( HWND hwnd, UINT flags, INPUT input, const struct raw_mouse *raw )
 {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
     struct user_thread_info *info = get_user_thread_info();
     BOOL send;
 
-    /* don't accumulate if there's button / wheel / MOUSEEVENTF_MOVE_NOCOALESCE */
-    send = input.mi.mouseData || (input.mi.dwFlags & ~(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE));
+    pthread_once( &once, init_input_batching );
+
+    /* Don't accumulate in immediate mode or for button / wheel / NOCOALESCE input. */
+    send = input_no_batch || input.mi.mouseData || (input.mi.dwFlags & ~(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE));
     if (send || info->mouse_hwnd != hwnd) send_mouse_motion( flags );
     else if (info->raw_mouse.count + raw->count > ARRAY_SIZE(raw->data)) send_mouse_motion( flags );
 

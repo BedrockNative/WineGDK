@@ -3,8 +3,13 @@
 Microsoft Services is WIP.
 
 New fork releases use `11.18-<number>-winrt`, reflecting support for both GDK
-and UWP/Windows Runtime. The current release is `11.18-12-winrt`; existing
+and UWP/Windows Runtime. The current release is `11.18-14-winrt`; existing
 `*-gdkcomponents` tags keep their original names.
+
+Mouse movement is delivered without win32u accumulation by default. Set
+`WINE_INPUT_NOBATCH=0` before launching to restore batching; `1` explicitly
+enables immediate delivery. This can increase wineserver traffic and CPU usage.
+It does not change the game's input polling rate or compositor frame pacing.
 
 Set `XODUS_SOCK_NAME` to override the default `xodus.sock` filename under
 `$XDG_RUNTIME_DIR` on Linux (`/tmp` on macOS). For example,
