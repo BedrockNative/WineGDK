@@ -422,6 +422,7 @@ struct x11drv_thread_data
     Window   selection_wnd;        /* window used for selection interactions */
     unsigned long warp_serial;     /* serial number of last pointer warp request */
     Window   clip_window;          /* window used for cursor clipping */
+    Window   clip_confine_window;  /* application child used as the confinement target */
     BOOL     clipping_cursor;      /* whether thread is currently clipping the cursor */
     Atom    *net_supported;        /* list of _NET_SUPPORTED atoms */
     int      net_supported_count;  /* number of _NET_SUPPORTED atoms */

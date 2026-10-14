@@ -360,6 +360,58 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
 
 #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
 
+static int clip_window_error( Display *display, XErrorEvent *event, void *arg )
+{
+    return event->error_code == BadWindow;
+}
+
+static void destroy_confine_window( struct x11drv_thread_data *data )
+{
+    if (!data->clip_confine_window) return;
+    /* The application window may already have destroyed its children. */
+    X11DRV_expect_error( data->display, clip_window_error, NULL );
+    XDestroyWindow( data->display, data->clip_confine_window );
+    XSync( data->display, False );
+    X11DRV_check_error();
+    data->clip_confine_window = 0;
+}
+
+#ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
+static Window create_confine_window( struct x11drv_thread_data *data, POINT pos, unsigned int width,
+                                     unsigned int height )
+{
+    HWND hwnd = NtUserGetForegroundWindow();
+    XWindowAttributes attrs;
+    XSetWindowAttributes child_attrs = {0};
+    Window parent, child, window = 0;
+    DWORD process = 0;
+    int x, y;
+
+    NtUserGetWindowThread( hwnd, &process );
+    if (process != GetCurrentProcessId() || !(parent = X11DRV_get_whole_window( hwnd ))) return 0;
+
+    /* Xwayland guesses the surface for a root-level InputOnly window by geometry,
+     * which can select an unrelated window behind the application. A child of the
+     * application resolves to its actual surface instead. Keep the desktop target
+     * for clips extending outside the application, since X clips children to parents.
+     */
+    X11DRV_expect_error( data->display, clip_window_error, NULL );
+    if (XGetWindowAttributes( data->display, parent, &attrs ) && attrs.map_state == IsViewable &&
+        XTranslateCoordinates( data->display, root_window, parent, pos.x, pos.y, &x, &y, &child ) &&
+        x >= 0 && y >= 0 && width <= attrs.width && height <= attrs.height &&
+        x <= attrs.width - width && y <= attrs.height - height)
+    {
+        window = XCreateWindow( data->display, parent, x, y, width, height, 0, 0, InputOnly,
+                                CopyFromParent, 0, &child_attrs );
+        XMapWindow( data->display, window );
+        TRACE( "confinement child %lx parent %lx at %d,%d size %ux%u\n", window, parent, x, y, width, height );
+    }
+    XSync( data->display, False );
+    if (X11DRV_check_error()) window = 0;
+    return window;
+}
+#endif
+
 /***********************************************************************
  *		grab_clipping_window
  *
@@ -369,7 +421,7 @@ static BOOL grab_clipping_window( const RECT *clip )
 {
 #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
     struct x11drv_thread_data *data = x11drv_thread_data();
-    Window clip_window;
+    Window clip_window, confine_window;
     HCURSOR cursor;
     POINT pos;
     int grab_result;
@@ -406,18 +458,24 @@ static BOOL grab_clipping_window( const RECT *clip )
                        max( 1, clip->right - clip->left ), max( 1, clip->bottom - clip->top ) );
     XMapWindow( data->display, clip_window );
 
+    destroy_confine_window( data );
+    data->clip_confine_window = create_confine_window( data, pos, max( 1, clip->right - clip->left ),
+                                                     max( 1, clip->bottom - clip->top ) );
+    confine_window = data->clip_confine_window ? data->clip_confine_window : clip_window;
+
     /* if the rectangle is shrinking we may get a pointer warp */
     if (!data->clipping_cursor || clip->left > clip_rect.left || clip->top > clip_rect.top ||
         clip->right < clip_rect.right || clip->bottom < clip_rect.bottom)
         data->warp_serial = NextRequest( data->display );
 
+    X11DRV_expect_error( data->display, clip_window_error, NULL );
     grab_result = XGrabPointer( data->display, clip_window, False,
-                       PointerMotionMask | ButtonPressMask | ButtonReleaseMask,
-                       GrabModeAsync, GrabModeAsync, clip_window, None, CurrentTime );
+                       PointerMotionMask | ButtonPressMask | ButtonReleaseMask | EnterWindowMask,
+                       GrabModeAsync, GrabModeAsync, confine_window, None, CurrentTime );
+    if (X11DRV_check_error()) grab_result = GrabNotViewable;
     TRACE( "XGrabPointer result %d, thread clipping %u, process clipping %u\n",
            grab_result, data->clipping_cursor, clipping_cursor );
-    if (grab_result == GrabSuccess)
-        clipping_cursor = TRUE;
+    clipping_cursor = grab_result == GrabSuccess;
 
     SERVER_START_REQ( set_cursor )
     {
@@ -455,6 +513,7 @@ void ungrab_clipping_window(void)
     TRACE( "no longer clipping\n" );
     XUnmapWindow( data->display, clip_window );
     if (clipping_cursor) XUngrabPointer( data->display, CurrentTime );
+    destroy_confine_window( data );
     clipping_cursor = FALSE;
     data->clipping_cursor = FALSE;
 }
@@ -1561,11 +1620,28 @@ BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *xev )
  */
 BOOL X11DRV_EnterNotify( HWND hwnd, XEvent *xev )
 {
+    struct x11drv_thread_data *data = x11drv_thread_data();
     XCrossingEvent *event = &xev->xcrossing;
     POINT pt = { event->x, event->y }, root = { event->x_root, event->y_root };
     UINT time = EVENT_x11_time_to_win32_time( event->time );
 
     TRACE( "hwnd %p/%lx pos %s detail %d\n", hwnd, event->window, wine_dbgstr_point( &pt ), event->detail );
+
+    if (event->window == data->clip_window)
+    {
+        /* Xwayland can drop the Wayland constraint on pointer leave while the
+         * X grab remains active. Restore it when the pointer returns. Ignore
+         * crossings caused by grabbing/ungrabbing to avoid a recapture loop.
+         */
+        if (event->mode == NotifyNormal && data->clipping_cursor &&
+            !is_old_motion_event( event->serial ) && is_current_process_focused())
+        {
+            RECT rect = clip_rect;
+            TRACE( "reapplying active clip %s on pointer re-entry\n", wine_dbgstr_rect(&rect) );
+            X11DRV_ClipCursor( &rect, FALSE );
+        }
+        return TRUE;
+    }
 
     x11drv_thread_data()->keymapnotify_hwnd = hwnd;
 
