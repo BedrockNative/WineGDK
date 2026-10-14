@@ -10,7 +10,6 @@
  */
 
 #define COBJMACROS
-#include <initguid.h>
 #include <windows.h>
 #include <xasyncprovider.h>
 #include "wine/test.h"
