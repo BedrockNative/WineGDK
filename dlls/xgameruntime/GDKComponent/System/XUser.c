@@ -218,6 +218,16 @@ struct xsts_entry
     HSTRING userHash;
 };
 
+struct xsts_request
+{
+    struct xsts_request *next;
+    struct xsts_entry result;
+    ULONGLONG generation;
+    UINT32 refs;
+    BOOL complete;
+    HRESULT hr;
+};
+
 #define XSTS_CACHE_SIZE 4
 
 struct XUser
@@ -246,6 +256,9 @@ struct XUser
     struct xsts_entry xstsCache[XSTS_CACHE_SIZE];
     UINT32 xstsCacheCount;
     SRWLOCK xstsLock;
+    CONDITION_VARIABLE xstsChanged;
+    struct xsts_request *xstsRequests;
+    ULONGLONG xstsGeneration;
 
     HSTRING publicGamerpic;
     HSTRING classicGamertag;
@@ -698,6 +711,53 @@ static const char *user_resolve_device_type( void )
     return "Win32";
 }
 
+static HRESULT user_xsts_cache_store( struct XUser *impl, const char *relyingParty, BOOL withTitle,
+                                     HSTRING token, HSTRING userHash, ULONGLONG expiry );
+
+static void user_cache_sisu_authorization( struct XUser *impl, IJsonObject *response )
+{
+    IJsonObject *authorization = NULL, *claims = NULL, *user = NULL;
+    IJsonArray *users = NULL;
+    HSTRING token = NULL, hash = NULL, xid = NULL;
+    const WCHAR *value;
+    WCHAR *end;
+    UINT64 xuid;
+    ULONGLONG expiry;
+
+    /* SISU was requested for this RP with our device and title identity. Keep
+     * its authorization alongside the title token, avoiding a second exchange.
+     * An absent or unusable authorization must not fail title authentication. */
+    if (FAILED(get_json_object( response, L"AuthorizationToken", &authorization )) ||
+        (expiry = xsts_expiry( authorization )) <= session_time() + 600000000 ||
+        FAILED(get_json_string( authorization, L"Token", &token )) ||
+        !WindowsGetStringLen( token ) ||
+        FAILED(get_json_object( authorization, L"DisplayClaims", &claims )) ||
+        FAILED(get_json_array( claims, L"xui", &users )) ||
+        FAILED(IJsonArray_GetObjectAt( users, 0, &user )) ||
+        FAILED(get_json_string( user, L"uhs", &hash )) ||
+        !WindowsGetStringLen( hash ) ||
+        FAILED(get_json_string( user, L"xid", &xid ))) goto done;
+
+    /* User hashes can differ between authentication contexts for the same
+     * account. Verify XUID, and retain this token's own hash as a pair. */
+    value = WindowsGetStringRawBuffer( xid, NULL );
+    if (*value < '0' || *value > '9') goto done;
+    errno = 0;
+    xuid = wcstoull( value, &end, 10 );
+    if (errno == ERANGE || *end || !xuid || xuid != impl->xuid) goto done;
+
+    if (SUCCEEDED(user_xsts_cache_store( impl, "http://xboxlive.com", TRUE, token, hash, expiry )))
+        TRACE( "Cached Xbox Live authorization returned by SISU.\n" );
+done:
+    WindowsDeleteString( token );
+    WindowsDeleteString( hash );
+    WindowsDeleteString( xid );
+    if (user) IJsonObject_Release( user );
+    if (users) IJsonArray_Release( users );
+    if (claims) IJsonObject_Release( claims );
+    if (authorization) IJsonObject_Release( authorization );
+}
+
 static HRESULT user_request_title_token_sisu( struct XUser *impl )
 {
     char *body = NULL, *device = NULL, *access = NULL, *app = NULL;
@@ -747,6 +807,7 @@ static HRESULT user_request_title_token_sisu( struct XUser *impl )
     if (FAILED(hr = parse_json( (char *)buffer, bufferSize, &object ))) goto cleanup;
     if (FAILED(hr = get_json_object( object, L"TitleToken", &title ))) goto cleanup;
     if (FAILED(hr = get_json_string( title, L"Token", &impl->titleToken ))) goto cleanup;
+    user_cache_sisu_authorization( impl, object );
     TRACE( "Obtained Xbox title token via SISU.\n" );
 cleanup:
     free( body );
@@ -1081,39 +1142,44 @@ static HRESULT user_xsts_cache_store( struct XUser *impl, const char *relyingPar
     return S_OK;
 }
 
+static HRESULT user_activate_xsts( struct XUser *impl, const struct xsts_entry *entry )
+{
+    HSTRING token = NULL, hash = NULL;
+    char *party;
+    HRESULT hr;
+
+    if (FAILED(hr = WindowsDuplicateString( entry->token, &token ))) return hr;
+    if (FAILED(hr = WindowsDuplicateString( entry->userHash, &hash )))
+    {
+        WindowsDeleteString( token );
+        return hr;
+    }
+    if (!(party = strdup( entry->relyingParty )))
+    {
+        WindowsDeleteString( token );
+        WindowsDeleteString( hash );
+        return E_OUTOFMEMORY;
+    }
+    WindowsDeleteString( impl->xstsToken );
+    WindowsDeleteString( impl->userHash );
+    free( impl->xstsRelyingParty );
+    impl->xstsToken = token;
+    impl->userHash = hash;
+    impl->xstsRelyingParty = party;
+    impl->xstsExpiry = entry->expiry;
+    impl->xstsWithTitle = entry->withTitle;
+    return S_OK;
+}
+
 static BOOL user_xsts_cache_activate( struct XUser *impl, const char *relyingParty, BOOL withTitle )
 {
-    HSTRING tokenCopy = NULL, hashCopy = NULL;
-    char *rpCopy = NULL;
-
     for (UINT32 i = 0; i < impl->xstsCacheCount; ++i)
     {
         struct xsts_entry *entry = &impl->xstsCache[i];
         if (entry->expiry <= session_time() + 600000000 || entry->withTitle != withTitle || !entry->relyingParty ||
             strcmp( entry->relyingParty, relyingParty ) || !entry->token || !entry->userHash)
             continue;
-        if (FAILED(WindowsDuplicateString( entry->token, &tokenCopy ))) return FALSE;
-        if (FAILED(WindowsDuplicateString( entry->userHash, &hashCopy )))
-        {
-            WindowsDeleteString( tokenCopy );
-            return FALSE;
-        }
-        if (!(rpCopy = strdup( relyingParty )))
-        {
-            WindowsDeleteString( tokenCopy );
-            WindowsDeleteString( hashCopy );
-            return FALSE;
-        }
-        if (impl->xstsToken) WindowsDeleteString( impl->xstsToken );
-        if (impl->userHash) WindowsDeleteString( impl->userHash );
-        free( impl->xstsRelyingParty );
-        impl->xstsExpiry = entry->expiry;
-        impl->xstsToken = tokenCopy;
-        impl->userHash = hashCopy;
-        impl->xstsRelyingParty = rpCopy;
-        impl->xstsWithTitle = withTitle;
-        TRACE( "Reusing cached XSTS rp=%s withTitle=%d.\n", debugstr_a( relyingParty ), withTitle );
-        return TRUE;
+        return SUCCEEDED(user_activate_xsts( impl, entry ));
     }
     return FALSE;
 }
@@ -1200,7 +1266,7 @@ done:
     return expiry;
 }
 
-static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingParty, BOOL withTitle )
+static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingParty, BOOL withTitle, BOOL concurrent )
 {
     static const char prefix[] = "{\"TokenType\":\"JWT\",\"RelyingParty\":\"";
     IJsonObject *child = NULL, *claims = NULL, *object = NULL;
@@ -1213,6 +1279,7 @@ static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingP
     const WCHAR *wToken;
     SIZE_T bufferSize;
     UINT64 newXuid;
+    ULONGLONG generation = impl->xstsGeneration;
     HRESULT hr;
 
     TRACE( "impl %p, relyingParty %s, withTitle %d.\n", impl, debugstr_a( relyingParty ), withTitle );
@@ -1224,6 +1291,9 @@ static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingP
             WARN( "Continuing XSTS without device/title tokens, hr %#lx.\n", hr );
             hr = S_OK;
         }
+        /* SISU may have supplied the requested authorization while obtaining
+         * the title token. Other relying parties still need their own XSTS. */
+        if (user_xsts_cache_activate( impl, relyingParty, withTitle )) return S_OK;
     }
 
     wToken = WindowsGetStringRawBuffer( impl->userToken, &wTokenLen );
@@ -1265,7 +1335,13 @@ static HRESULT user_request_xsts_token( struct XUser *impl, const char *relyingP
     if (!WideCharToMultiByte( CP_UTF8, WC_ERR_INVALID_CHARS, wToken, wTokenLen, token, tokenLen, NULL, NULL )) goto error;
     strcat( body, "\"]}}" );
 
-    if (FAILED(hr = http_request( L"POST", L"xsts.auth.xboxlive.com", L"/xsts/authorize", body, CT_JSON, ACCEPT_JSON, &buffer, &bufferSize ))) goto cleanup;
+    /* The body owns all credentials needed by this exchange. Other relying
+     * parties may proceed while it is in flight; shared state stays locked. */
+    if (concurrent) ReleaseSRWLockExclusive( &impl->xstsLock );
+    hr = http_request( L"POST", L"xsts.auth.xboxlive.com", L"/xsts/authorize", body, CT_JSON, ACCEPT_JSON, &buffer, &bufferSize );
+    if (concurrent) AcquireSRWLockExclusive( &impl->xstsLock );
+    if (generation != impl->xstsGeneration) hr = HRESULT_FROM_WIN32( ERROR_RETRY );
+    if (FAILED(hr)) goto cleanup;
     if (FAILED(hr = parse_json( (char *)buffer, bufferSize, &object ))) goto cleanup;
     if (FAILED(hr = get_json_string( object, L"Token", &newToken ))) goto cleanup;
     if (FAILED(hr = get_json_object( object, L"DisplayClaims", &claims ))) goto cleanup;
@@ -1326,24 +1402,92 @@ error:
     goto cleanup;
 }
 
+/* All request-list and result accesses are protected by xstsLock. A waiter
+ * retains its result even if another RP evicts that entry from the small cache. */
+static void user_release_xsts_request( struct xsts_request *request )
+{
+    if (--request->refs) return;
+    WindowsDeleteString( request->result.token );
+    WindowsDeleteString( request->result.userHash );
+    free( request->result.relyingParty );
+    free( request );
+}
+
 static HRESULT user_ensure_xsts_for_url( struct XUser *impl, const URL_COMPONENTSA *url, const char *relyingParty )
 {
     BOOL withTitle = url_wants_title_claims( url, relyingParty );
+    struct xsts_request *request, **cursor;
+    ULONGLONG generation;
+    HRESULT hr;
 
+retry:
+    generation = impl->xstsGeneration;
     if (impl->xstsExpiry > session_time() + 600000000 &&
         impl->xstsRelyingParty && impl->xstsToken && impl->userHash &&
         !strcmp( impl->xstsRelyingParty, relyingParty ) && impl->xstsWithTitle == withTitle)
         return S_OK;
+    if (user_xsts_cache_activate( impl, relyingParty, withTitle )) return S_OK;
 
-    if (user_xsts_cache_activate( impl, relyingParty, withTitle ))
-        return S_OK;
+    for (request = impl->xstsRequests; request; request = request->next)
+    {
+        if (request->generation != generation || request->result.withTitle != withTitle ||
+            strcmp( request->result.relyingParty, relyingParty )) continue;
+        ++request->refs;
+        while (!request->complete)
+        {
+            if (!SleepConditionVariableSRW( &impl->xstsChanged, &impl->xstsLock, INFINITE, 0 ))
+            {
+                hr = HRESULT_FROM_WIN32( GetLastError() );
+                user_release_xsts_request( request );
+                return hr;
+            }
+        }
+        hr = request->hr;
+        if (generation == impl->xstsGeneration && SUCCEEDED(hr))
+            hr = user_activate_xsts( impl, &request->result );
+        user_release_xsts_request( request );
+        if (generation != impl->xstsGeneration) goto retry;
+        return hr;
+    }
 
-    return user_request_xsts_token( impl, relyingParty, withTitle );
+    if (!(request = calloc( 1, sizeof(*request) ))) return E_OUTOFMEMORY;
+    if (!(request->result.relyingParty = strdup( relyingParty )))
+    {
+        free( request );
+        return E_OUTOFMEMORY;
+    }
+    request->result.withTitle = withTitle;
+    request->generation = generation;
+    request->refs = 1;
+    request->next = impl->xstsRequests;
+    impl->xstsRequests = request;
+
+    hr = user_request_xsts_token( impl, relyingParty, withTitle, TRUE );
+    if (SUCCEEDED(hr))
+    {
+        request->result.expiry = impl->xstsExpiry;
+        hr = WindowsDuplicateString( impl->xstsToken, &request->result.token );
+        if (SUCCEEDED(hr)) hr = WindowsDuplicateString( impl->userHash, &request->result.userHash );
+    }
+    request->hr = hr;
+    request->complete = TRUE;
+    for (cursor = &impl->xstsRequests; *cursor != request; cursor = &(*cursor)->next) {}
+    *cursor = request->next;
+    WakeAllConditionVariable( &impl->xstsChanged );
+    user_release_xsts_request( request );
+    if (generation != impl->xstsGeneration) goto retry;
+    return hr;
 }
 
 static HRESULT WINAPI user_RequestXstsToken( IUser *iface )
 {
-    return user_request_xsts_token( impl_from_IUser( iface ), "http://xboxlive.com", TRUE );
+    struct XUser *impl = impl_from_IUser( iface );
+    HRESULT hr;
+
+    AcquireSRWLockExclusive( &impl->xstsLock );
+    hr = user_request_xsts_token( impl, "http://xboxlive.com", TRUE, FALSE );
+    ReleaseSRWLockExclusive( &impl->xstsLock );
+    return hr;
 }
 
 static HRESULT user_format_proof_key( const UCHAR *blob, char *proofKey )
@@ -1590,7 +1734,7 @@ static HRESULT finish_user_load( XUserHandle impl )
     }
     /* Loading the profile only requires user claims. Acquire device/title claims
      * lazily in user_ensure_xsts_for_url(), when a service actually needs them. */
-    if (FAILED(hr = user_request_xsts_token( impl, "http://xboxlive.com", FALSE )))
+    if (FAILED(hr = user_request_xsts_token( impl, "http://xboxlive.com", FALSE, FALSE )))
     {
         WARN( "Xbox XSTS exchange failed, hr %#lx.\n", hr );
         goto cleanup;
@@ -1649,14 +1793,44 @@ cleanup:
     return hr;
 }
 
-/* Games may add the default user several times during startup, even closing the
- * previous handle first. Coalesce those exchanges for a short, fixed interval.
- * Every caller must still obtain a fresh response from Xodus for the same MSA
- * app: the confirmed account ID prevents reuse after sign-out/account changes. */
+/* Repeated default-user requests may reuse a recent handle after the broker
+ * confirms its account-bound session. Older brokers fall back to MSA exchange. */
 static SRWLOCK msa_user_lock = SRWLOCK_INIT;
 static XUserHandle msa_user;
-static char *msa_user_puid;
+static char *msa_user_puid, *msa_user_app_id;
+static UINT32 msa_user_title;
+static BOOLEAN msa_user_trust;
 static ULONGLONG msa_user_loaded, msa_user_expires;
+
+static BOOL msa_user_matches( const char *puid )
+{
+    return msa_user && msa_user_puid && puid && !strcmp( msa_user_puid, puid ) &&
+           msa_user_app_id && msaAppId && !strcmp( msa_user_app_id, msaAppId ) &&
+           msa_user_title == titleId && msa_user_trust == fullTrust &&
+           GetTickCount64() - msa_user_loaded < 60000 &&
+           session_time() + 600000000 < msa_user_expires;
+}
+
+static HRESULT reuse_msa_user( XUserHandle *user )
+{
+    LONGLONG expiry = 0;
+    HRESULT hr = S_FALSE;
+
+    *user = NULL;
+    AcquireSRWLockExclusive( &msa_user_lock );
+    if (msa_user_matches( msa_user_puid ) &&
+        xodus_session_cache( "get", msa_user_puid, 0, NULL, NULL, &expiry ) == S_OK &&
+        expiry > (LONGLONG)((session_time() - SESSION_FILETIME_EPOCH) / 10000000) + 60 &&
+        msa_user_matches( msa_user_puid ))
+    {
+        IUser_AddRef( &msa_user->IUser_iface );
+        *user = msa_user;
+        hr = S_OK;
+        TRACE( "Reusing default user after broker session validation.\n" );
+    }
+    ReleaseSRWLockExclusive( &msa_user_lock );
+    return hr;
+}
 
 static void clear_msa_user(void)
 {
@@ -1665,6 +1839,8 @@ static void clear_msa_user(void)
     msa_user = NULL;
     free( msa_user_puid );
     msa_user_puid = NULL;
+    free( msa_user_app_id );
+    msa_user_app_id = NULL;
     ReleaseSRWLockExclusive( &msa_user_lock );
 }
 
@@ -1674,6 +1850,7 @@ static HRESULT refresh_user_session( struct XUser *impl )
     xodus_session_cache( "invalidate", impl->brokerPuid, 0, NULL, NULL, NULL );
     clear_msa_user();
     AcquireSRWLockExclusive( &impl->xstsLock );
+    ++impl->xstsGeneration;
     user_xsts_cache_clear( impl );
     WindowsDeleteString( impl->xstsToken ); impl->xstsToken = NULL;
     WindowsDeleteString( impl->deviceToken ); impl->deviceToken = NULL;
@@ -1688,8 +1865,6 @@ static HRESULT LoadMsaUser( const char *access_token, const char *puid, const ch
 {
     XUserHandle impl = NULL;
     HSTRING credential = NULL;
-    FILETIME now;
-    ULONGLONG current_time;
     HRESULT hr;
 
     TRACE( "user %p.\n", user );
@@ -1698,11 +1873,7 @@ static HRESULT LoadMsaUser( const char *access_token, const char *puid, const ch
     *user = NULL;
     if (FAILED(hr = MultiByteToHSTRING( access_token, strlen( access_token ), &credential ))) return hr;
     AcquireSRWLockExclusive( &msa_user_lock );
-    GetSystemTimeAsFileTime( &now );
-    current_time = ((ULONGLONG)now.dwHighDateTime << 32) | now.dwLowDateTime;
-    if (msa_user && GetTickCount64() - msa_user_loaded < 60000 &&
-        current_time + 600000000 < msa_user_expires &&
-        puid && *puid && msa_user_puid && !strcmp( puid, msa_user_puid ))
+    if (msa_user_matches( puid ))
     {
         TRACE( "Reusing the authenticated default user during startup.\n" );
         IUser_AddRef( &msa_user->IUser_iface );
@@ -1714,6 +1885,8 @@ static HRESULT LoadMsaUser( const char *access_token, const char *puid, const ch
     msa_user = NULL;
     free( msa_user_puid );
     msa_user_puid = NULL;
+    free( msa_user_app_id );
+    msa_user_app_id = NULL;
     if (!(impl = calloc( 1, sizeof(*impl) )))
     {
         hr = E_OUTOFMEMORY;
@@ -1737,8 +1910,11 @@ static HRESULT LoadMsaUser( const char *access_token, const char *puid, const ch
     }
     if (SUCCEEDED(hr))
     {
-        if (puid && *puid && (msa_user_puid = strdup( puid )))
+        if (puid && *puid && msaAppId && (msa_user_puid = strdup( puid )) &&
+            (msa_user_app_id = strdup( msaAppId )))
         {
+            msa_user_title = titleId;
+            msa_user_trust = fullTrust;
             msa_user = impl;
             msa_user_loaded = GetTickCount64();
             msa_user_expires = impl->xstsExpiry;
@@ -1925,6 +2101,7 @@ static HRESULT WINAPI XUserAddProvider( XAsyncOp op, const XAsyncProviderData *d
                 if (xodusAvailable && (context->options & XUserAddOptions_AddDefaultUserSilently ||
                     context->options & XUserAddOptions_AddDefaultUserAllowingUI))
                 {
+                    if (reuse_msa_user( &context->user ) == S_OK) goto complete;
                     hr = IXodusService_MsaTokenRequest(
                         xodus_service, msaAppId, context->options & XUserAddOptions_AddDefaultUserAllowingUI,
                         fullTrust, &operation
