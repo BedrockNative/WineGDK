@@ -110,16 +110,16 @@ extern "C" {
 #define IPC_REQUEST_TIMEOUT_MS 60000
 #define XODUS_INTEROP 1
 
-extern BOOLEAN initializeCalled;
-extern BOOLEAN xodusAvailable;
+EXTERN_C BOOLEAN initializeCalled;
+EXTERN_C BOOLEAN xodusAvailable;
 EXTERN_C BOOLEAN xodusSessionCacheAvailable;
 EXTERN_C HRESULT xodus_session_cache( const char *operation, const char *puid,
                                      LONGLONG expiry, const char *input, char **output,
                                      LONGLONG *returned_expiry );
 
-extern char *msaAppId;
-extern UINT32 titleId;
-extern BOOLEAN fullTrust;
+EXTERN_C char *msaAppId;
+EXTERN_C UINT32 titleId;
+EXTERN_C BOOLEAN fullTrust;
 
 /* C linkage so main.c and C++ translation units share the same symbols. */
 EXTERN_C IXErrorImpl *x_error_impl;
