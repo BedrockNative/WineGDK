@@ -3,8 +3,14 @@
 Microsoft Services is WIP.
 
 New fork releases use `11.18-<number>-winrt`, reflecting support for both GDK
-and UWP/Windows Runtime. The current release is `11.18-14-winrt`; existing
+and UWP/Windows Runtime. The current release is `11.18-15-winrt`; existing
 `*-gdkcomponents` tags keep their original names.
+
+DualSense controllers (`054c:0ce6`) use SDL/XInput routing by default so native
+GameInput can receive gamepad readings. Prefix setup sets `Hidraw=0` under
+`HKLM\System\CurrentControlSet\Services\winebus\Devices\054c/0ce6`, preserving
+existing values on updates. Close applications and run `bin/wineboot -u` to
+apply the default to an existing prefix without an explicit override.
 
 Mouse movement is delivered without win32u accumulation by default. Set
 `WINE_INPUT_NOBATCH=0` before launching to restore batching; `1` explicitly
