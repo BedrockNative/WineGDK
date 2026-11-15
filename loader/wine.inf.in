@@ -1114,6 +1114,9 @@ StartType=3
 ErrorControl=1
 
 [Services]
+; Route DualSense through SDL/XInput so native GameInput receives gamepad readings.
+; Preserve explicit user overrides when updating a prefix.
+HKLM,"System\CurrentControlSet\Services\winebus\Devices\054c/0ce6","Hidraw",0x10003,0
 HKLM,%CurrentVersion%\RunServices,"winemenubuilder",2,"%11%\winemenubuilder.exe -a -r"
 HKLM,"System\CurrentControlSet\Services\Dnscache\Parameters",,16
 HKLM,"System\CurrentControlSet\Services\Eventlog\Application",,16
