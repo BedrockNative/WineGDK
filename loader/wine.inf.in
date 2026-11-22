@@ -1,4 +1,5 @@
 ;; WineGDK capability: bedrock-data-dir-v1
+;; WineGDK capability: file-activation-v1
 ;; .INF script for the basic Wine configuration
 ;; Version: @PACKAGE_STRING@
 ;;

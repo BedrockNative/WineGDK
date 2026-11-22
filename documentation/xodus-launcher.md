@@ -183,3 +183,9 @@ Set `WINEGDK_BEDROCK_DATA_DIR` in the Unix environment of the Wine game process 
 The setting is per process. An unset, empty or relative value uses the ordinary prefix layout. Launchers that need the names visible when listing the parent Roaming folder can create empty directories there. The first line of the shipped `share/wine/wine.inf` is `;; WineGDK capability: bedrock-data-dir-v1` in runtimes with this feature.
 
 To exercise the file APIs with two processes in one prefix, compile `tools/tests/bedrock-data-dir.c` as a Windows console executable (entry point `mainCRTStartup`, link kernel32 and ntdll) and run `bash tools/tests/bedrock-data-dir.sh /path/to/bin /path/to/test.exe`.
+
+## File activation
+
+A launcher can set `WINEGDK_FILE_ACTIVATION_DIR` to the Windows path of a private, empty directory dedicated to one game session. The runtime advertises support with `;; WineGDK capability: file-activation-v1` in `share/wine/wine.inf`.
+
+When the game registers its GDK activation callback, WineGDK creates `ready`. To send a file, write its UTF-8 absolute Windows path (without a trailing newline or NUL) to a temporary file and atomically rename it to `<uuid>.req` in the directory. WineGDK claims it as `.run`, invokes the game callback with file activation type 1 on the registered task queue’s completion port, then renames it to `.ack` or `.err`. The launcher removes the reply. An acknowledgement confirms callback delivery. The game determines whether the content is valid. Use a new directory for every session and remove it when the game exits.

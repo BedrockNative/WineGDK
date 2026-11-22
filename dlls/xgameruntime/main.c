@@ -164,6 +164,8 @@ HRESULT WINAPI InitializeApiImpl( ULONG gdkVer, ULONG gsVer )
 
 typedef HRESULT (WINAPI *QueryApiImpl_ext)( const GUID *runtimeClassId, REFIID interfaceId, void **out );
 
+extern HRESULT activation_query(REFIID cls, REFIID iid, void **out);
+
 HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, void **out )
 {
     QueryApiImpl_ext func;
@@ -176,6 +178,7 @@ HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, voi
     *out = NULL;
     if (!runtimeClassId || !interfaceId) return E_INVALIDARG;
 
+    if (activation_query(runtimeClassId, interfaceId, out) == S_OK) return S_OK;
     if (IsEqualGUID( runtimeClassId, &CLSID_XErrorImpl ))
         return IXErrorImpl_QueryInterface( x_error_impl, interfaceId, out );
     if (IsEqualGUID( runtimeClassId, &CLSID_XLauncherImpl ))

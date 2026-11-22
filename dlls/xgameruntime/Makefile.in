@@ -19,6 +19,7 @@ SOURCES = \
 	GDKComponent/System/Threading/ThreadPool.cpp \
 	\
 	GDKComponent/System/XThreading.cpp \
+	GDKComponent/System/activation.c \
 	GDKComponent/System/XGame.c \
 	GDKComponent/System/XError.c \
 	GDKComponent/System/XLauncher.c \
