@@ -175,3 +175,11 @@ contains `Operation` (`get`, `put`, `invalidate`), `Puid`, `ClientId`, `TitleId`
 `GdkSessionResponse` contains `Status` (`hit`, `miss`, `stored`, `invalidated`),
 `Expiry` and `Data`. The binary payload is internal, versioned, bounded and
 validated before importing the proof key. Do not log or persist these payloads.
+
+## Bedrock profile storage
+
+Set `WINEGDK_BEDROCK_DATA_DIR` in the Unix environment of the Wine game process to an existing absolute directory. Both `C:\users\<Wine user>\AppData\Roaming\Minecraft Bedrock` and its sibling `Minecraft Bedrock Preview` resolve to that directory, including their descendants. Matches use case-insensitive directory boundaries. The standard Windows file APIs continue to use logical Windows names. Package `LocalState` follows its usual path in the prefix.
+
+The setting is per process. An unset, empty or relative value uses the ordinary prefix layout. Launchers that need the names visible when listing the parent Roaming folder can create empty directories there. The first line of the shipped `share/wine/wine.inf` is `;; WineGDK capability: bedrock-data-dir-v1` in runtimes with this feature.
+
+To exercise the file APIs with two processes in one prefix, compile `tools/tests/bedrock-data-dir.c` as a Windows console executable (entry point `mainCRTStartup`, link kernel32 and ntdll) and run `bash tools/tests/bedrock-data-dir.sh /path/to/bin /path/to/test.exe`.

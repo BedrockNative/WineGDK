@@ -3766,6 +3766,83 @@ static NTSTATUS lookup_unix_name( int root_fd, OBJECT_ATTRIBUTES *attr, UNICODE_
 }
 
 
+/* Return the offset after the exact Roaming game directory. Match bounded NT
+ * names: OBJECT_ATTRIBUTES does not require a terminating NUL. */
+static ULONG bedrock_root_end( const UNICODE_STRING *path )
+{
+    static const WCHAR users[] = u"C:\\users\\";
+    static const WCHAR release[] = u"\\AppData\\Roaming\\Minecraft Bedrock";
+    static const WCHAR preview[] = u"\\AppData\\Roaming\\Minecraft Bedrock Preview";
+    WCHAR username[256];
+    ULONG i = get_dos_prefix_len( path ), len = path->Length / sizeof(WCHAR), n;
+    const WCHAR *name = path->Buffer;
+    int user_len;
+
+    if (!i || len - i < ARRAY_SIZE(users) - 1 || wcsnicmp( name + i, users, ARRAY_SIZE(users) - 1 )) return 0;
+    i += ARRAY_SIZE(users) - 1;
+    user_len = ntdll_umbstowcs( user_name, strlen(user_name), username, ARRAY_SIZE(username) );
+    if (user_len <= 0 || (ULONG)user_len > len - i || wcsnicmp( name + i, username, user_len )) return 0;
+    i += user_len;
+    n = ARRAY_SIZE(release) - 1;
+    if (n > len - i || wcsnicmp( name + i, release, n ) || (i + n < len && name[i + n] != '\\'))
+    {
+        n = ARRAY_SIZE(preview) - 1;
+        if (n > len - i || wcsnicmp( name + i, preview, n ) || (i + n < len && name[i + n] != '\\')) return 0;
+    }
+    return i + n;
+}
+
+/* A handle opened inside the redirected tree already refers to the correct
+ * directory. Promote relative opens crossing into the tree from an ancestor
+ * to a logical absolute name, so the server receives a matching root/name. */
+static NTSTATUS bedrock_expand_relative( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *absolute )
+{
+    const UNICODE_STRING *child = attr->ObjectName;
+    ULONG size = 512, len = child->Length / sizeof(WCHAR), i;
+    OBJECT_NAME_INFORMATION *parent;
+    NTSTATUS status;
+    WCHAR *full;
+    ULONG count, end;
+    const WCHAR *p = child->Buffer;
+    static const WCHAR game[] = u"Minecraft Bedrock";
+
+    if (!len || *p == '\\') return STATUS_SUCCESS;
+    for (i = 0; i + ARRAY_SIZE(game) - 1 <= len; ++i)
+        if ((!i || p[i - 1] == '\\') && !wcsnicmp( p + i, game, ARRAY_SIZE(game) - 1 )) break;
+    if (i + ARRAY_SIZE(game) - 1 > len) return STATUS_SUCCESS;
+    for (;;)
+    {
+        if (!(parent = malloc( size ))) return STATUS_NO_MEMORY;
+        status = NtQueryObject( attr->RootDirectory, ObjectNameInformation, parent, size, &size );
+        if (!status) break;
+        free( parent );
+        if (status != STATUS_BUFFER_OVERFLOW && status != STATUS_INFO_LENGTH_MISMATCH) return status;
+    }
+    count = parent->Name.Length / sizeof(WCHAR);
+    if (!count || count + len + 2 > 0x7fff) { free( parent ); return STATUS_SUCCESS; }
+    if (!(full = malloc( (count + len + 2) * sizeof(WCHAR) ))) { free( parent ); return STATUS_NO_MEMORY; }
+    memcpy( full, parent->Name.Buffer, parent->Name.Length );
+    free( parent );
+    if (full[count - 1] != '\\') full[count++] = '\\';
+    memcpy( full + count, p, child->Length );
+    full[count + len] = 0;
+    absolute->Buffer = full;
+    absolute->Length = (count + len) * sizeof(WCHAR);
+    absolute->MaximumLength = absolute->Length + sizeof(WCHAR);
+    end = bedrock_root_end( absolute );
+    if (end > count)
+    {
+        attr->RootDirectory = NULL;
+        attr->ObjectName = absolute;
+    }
+    else
+    {
+        free( full );
+        absolute->Buffer = NULL;
+    }
+    return STATUS_SUCCESS;
+}
+
 /******************************************************************************
  *           nt_to_unix_file_name_no_root
  */
@@ -3783,6 +3860,8 @@ static NTSTATUS nt_to_unix_file_name_no_root( OBJECT_ATTRIBUTES *attr, UNICODE_S
     char *unix_name;
     int pos, ret, name_len, unix_len, prefix_len;
     WCHAR prefix[MAX_DIR_ENTRY_LEN + 1];
+    const char *data_dir = getenv( "WINEGDK_BEDROCK_DATA_DIR" );
+    ULONG mapped;
     BOOLEAN is_unix = FALSE;
 
     name     = attr->ObjectName->Buffer;
@@ -3864,6 +3943,19 @@ static NTSTATUS nt_to_unix_file_name_no_root( OBJECT_ATTRIBUTES *attr, UNICODE_S
     prefix_len++;  /* skip initial backslash */
     if (name_len > prefix_len && name[prefix_len] == '\\') prefix_len++;  /* allow a second backslash */
     nt_pos += prefix_len;
+
+    mapped = data_dir && data_dir[0] == '/' ? bedrock_root_end( attr->ObjectName ) : 0;
+    if (mapped)
+    {
+        /* Keep the logical NT name. Only the Unix base used for lookup changes. */
+        free( unix_name );
+        pos = strlen( data_dir );
+        unix_len = pos + (attr->ObjectName->Length / sizeof(WCHAR) - mapped) * 3 + MAX_DIR_ENTRY_LEN + 3;
+        if (!(unix_name = malloc( unix_len ))) return STATUS_NO_MEMORY;
+        strcpy( unix_name, data_dir );
+        nt_pos = mapped;
+        if (nt_pos < attr->ObjectName->Length / sizeof(WCHAR)) nt_pos++;
+    }
 
     status = lookup_unix_name( AT_FDCWD, attr, nt_name, nt_pos, &unix_name, unix_len,
                                pos, disposition, open_reparse, is_unix, reparse_count );
@@ -4426,12 +4518,19 @@ static void remove_trailing_backslash( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *
 NTSTATUS get_nt_and_unix_names( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *nt_name,
                                 char **unix_name_ret, UINT disposition, BOOL open_reparse )
 {
+    const char *data_dir = attr->RootDirectory ? getenv( "WINEGDK_BEDROCK_DATA_DIR" ) : NULL;
     ULONG lenA, lenW = attr->ObjectName->Length / sizeof(WCHAR);
     UNICODE_STRING *orig = attr->ObjectName;
     NTSTATUS status;
 
     nt_name->Buffer = NULL;
     *unix_name_ret = NULL;
+
+    if (attr->RootDirectory && data_dir && data_dir[0] == '/')
+    {
+        if ((status = bedrock_expand_relative( attr, nt_name ))) return status;
+        lenW = attr->ObjectName->Length / sizeof(WCHAR);
+    }
 
     if (!attr->RootDirectory && lenW > ARRAY_SIZE(unix_prefixW) &&
         !wcsncmp( attr->ObjectName->Buffer, unix_prefixW, ARRAY_SIZE(unix_prefixW) ))

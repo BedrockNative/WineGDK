@@ -3,8 +3,10 @@
 Microsoft Services is WIP.
 
 New fork releases use `11.18-<number>-winrt`, reflecting support for both GDK
-and UWP/Windows Runtime. The current release is `11.18-15-winrt`; existing
+and UWP/Windows Runtime. The current release is `11.18-16-winrt`; existing
 `*-gdkcomponents` tags keep their original names.
+
+Set `WINEGDK_BEDROCK_DATA_DIR` to an existing absolute Unix directory to use it as the root of both Minecraft Bedrock folders under Roaming for that process. See [launcher integration](documentation/xodus-launcher.md#bedrock-profile-storage).
 
 DualSense controllers (`054c:0ce6`) use SDL/XInput routing by default so native
 GameInput can receive gamepad readings. Prefix setup sets `Hidraw=0` under
